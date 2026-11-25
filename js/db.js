@@ -1,9 +1,18 @@
-/* 数据访问层 —— IndexedDB（PWA 离线可用）
+/* 数据访问层 —— 双适配器（v2.2 接 Supabase）
  * 抽象接口 TodoRepository：getTodos / getTodoById / createTodo / updateTodo / deleteTodo
- * 小程序端走微信云开发（云函数+云数据库），Web 端走 IndexedDB；两端数据模型字段一致，
- * 未来接入同一后端时只需替换本文件的实现，业务层（app.js/paper.js/util.js）不动。
+ * 路由规则（业务层 app.js/paper.js/util.js 零感知）：
+ *   - useCloud() = config.js 已填凭据 && 已登录 && 在线 → CloudTodoRepository（Supabase）；
+ *   - 否则 → 本机 IndexedDB（离线可用，也是未启用云同步时的默认存储）。
+ * 小程序端仍走微信云开发，互不影响。
  */
 import { uuid, todayStr } from './util.js';
+import { USE_SUPABASE } from './config.js';
+import { supaState, getCloudUser, saveCloudUser, CloudTodoRepository } from './supabase-db.js';
+
+/* 在线走云端、离线回本机（离线期间的改动回到在线后可用「上传本机数据到云端」补传；自动队列在 P3） */
+function useCloud() {
+  return !!(USE_SUPABASE && supaState().active && (typeof navigator === 'undefined' || navigator.onLine !== false));
+}
 
 const DB_NAME = 'yiqi-todo-web';
 const DB_VER = 1;
@@ -52,6 +61,12 @@ const del = (store, key) => tx(store, 'readwrite', (s) => s.delete(key));
 
 /* ---------- Web 端本地用户（无登录系统时字段保留，接后端后可替换） ---------- */
 export async function getLocalUser() {
+  if (useCloud()) {
+    try {
+      const cu = await getCloudUser();
+      if (cu) { await put('meta', { key: 'user', value: cu }); return cu; }
+    } catch (e) { console.warn('[db] getCloudUser fallback to local', e); }
+  }
   const m = await getOne('meta', 'user');
   if (m && m.value) return m.value;
   const user = {
@@ -64,6 +79,7 @@ export async function getLocalUser() {
 }
 export async function saveLocalUser(user) {
   await put('meta', { key: 'user', value: user });
+  if (useCloud()) { try { await saveCloudUser(user); } catch (e) { console.warn('[db] saveCloudUser failed', e); } }
 }
 
 /* ---------- 新建 Todo 的默认结构（与小程序端 doCreate 对齐） ---------- */
@@ -94,12 +110,21 @@ export function newTodoDoc(partial, user) {
 }
 
 export const TodoRepository = {
-  getTodos: () => getAll('todos'),
-  getTodoById: (id) => getOne('todos', id).then((v) => v || null),
-  createTodo: (todo) => put('todos', todo),
-  updateTodo: (todo) => put('todos', todo),
-  deleteTodo: (id) => del('todos', id)
+  getTodos: () => (useCloud() ? CloudTodoRepository.getTodos() : getAll('todos')),
+  getTodoById: (id) => (useCloud() ? CloudTodoRepository.getTodoById(id) : getOne('todos', id).then((v) => v || null)),
+  createTodo: (todo) => (useCloud() ? CloudTodoRepository.createTodo(todo) : put('todos', todo)),
+  updateTodo: (todo) => (useCloud() ? CloudTodoRepository.updateTodo(todo) : put('todos', todo)),
+  deleteTodo: (id) => (useCloud() ? CloudTodoRepository.deleteTodo(id) : del('todos', id))
 };
+
+/* ---------- 本机数据一键上云（首次登录迁移 / 离线改动补传） ---------- */
+export async function uploadLocalToCloud() {
+  if (!useCloud()) throw new Error('云端未启用或未登录');
+  const todos = await getAll('todos');
+  const n = await CloudTodoRepository.upsertMany(todos);
+  return n;
+}
+export { getAll as localGetAllTodos, del as localDelTodo };
 
 /* ---------- 群组（Web 端本地演示实现；字段与小程序一致，待接后端同步） ---------- */
 export const GroupRepository = {

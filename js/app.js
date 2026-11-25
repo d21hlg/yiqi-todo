@@ -5,9 +5,11 @@
 import {
   PRESET_CATEGORIES, TODO_TEMPLATES, templateMeta, getDefaultTemplateByCategory, categoryOptions,
   getTodoTitlePreview, getTodoDate, filterTodos, tasksStat, isTodoCompleted, normalizeTasks,
-  todayStr, shiftDate, dayInfo, fmtMinute, daysInMonth, tsToDateStr, esc, debounce
+  todayStr, shiftDate, dayInfo, fmtMinute, daysInMonth, tsToDateStr, esc, debounce, uid, formatDailyTodoTitle, getDailyTodoByDate, dailyHasContent, mergeDuplicateDailyTodos
 } from './util.js';
-import { TodoRepository, GroupRepository, getLocalUser, saveLocalUser, newTodoDoc, exportAll, importAll } from './db.js';
+import { TodoRepository, GroupRepository, getLocalUser, saveLocalUser, newTodoDoc, exportAll, importAll, uploadLocalToCloud } from './db.js';
+import { USE_SUPABASE } from './config.js';
+import { initAuth, supaState, signInWithEmail, signOutCloud } from './supabase-db.js';
 import { createPaperEditor } from './paper.js';
 
 const view = document.getElementById('view');
@@ -19,7 +21,7 @@ const state = {
   user: null,
   todos: [],
   groups: [],
-  daily: { date: todayStr(), filter: 'all' },
+  daily: { date: todayStr(), viewMode: 'tasks', doc: null, editor: null, draftId: null, creating: false },
   filters: { selectedMonth: '', selectedDay: '', selectedCategoryId: null, keyword: '' },
   edit: null // { doc, isNew, editor, saveTimer, dirty }
 };
@@ -52,7 +54,10 @@ function parseHash() {
 
 async function render() {
   flushEditSave();
+  flushDailySave();
+  cleanupDailyDraft();
   if (state.edit && state.edit.editor) { state.edit.editor.destroy(); state.edit.editor = null; }
+  destroyDailyEditor();
   state.edit = null;
   await reloadAll();
 
@@ -100,24 +105,149 @@ function bindCards(container) {
   });
 }
 
-/* ================= 今日（单日聚焦） ================= */
+/** template id → 纸张类名（装饰边框 + 纸张底纹 lines/grid/dots） */
+function paperClassOf(tplId) {
+  const m = templateMeta(tplId) || {};
+  return (m.cls ? m.cls + ' ' : '') + (m.paper && m.paper !== 'plain' ? 'ps-' + m.paper : '');
+}
+
+/* ============ 今日（v2.0：每天仅一篇 daily Todo，默认直接展开 tasks） ============ */
+let dailyMergeDone = false;
+let dailySave = null; // { timer, dirty, doc, editor }
+
+/** 旧数据兼容：同一天多篇 daily 自动合并落库（tasks 串接进最早一篇，其余删除；幂等） */
+async function persistDailyMerge() {
+  if (dailyMergeDone) return;
+  const merged = mergeDuplicateDailyTodos(state.todos);
+  const dups = merged.filter((t) => t._mergedFrom && t._mergedFrom.length > 1);
+  if (!dups.length) return;
+  dailyMergeDone = true;
+  try {
+    for (const g of dups) {
+      const first = state.todos.find((t) => t.id === g._mergedFrom[0]);
+      if (!first) continue;
+      first.tasks = g.tasks;
+      first.title = formatDailyTodoTitle(g.targetDate);
+      first.titleCustom = true;
+      first.createTime = g.createTime;
+      first.updateTime = g.updateTime;
+      first.isDone = isTodoCompleted(g.tasks);
+      await TodoRepository.updateTodo(first);
+      for (const id of g._mergedFrom.slice(1)) {
+        await TodoRepository.deleteTodo(id);
+        state.todos = state.todos.filter((t) => t.id !== id);
+      }
+    }
+    destroyDailyEditor();
+    toast('已自动合并同一天的重复 Todo');
+    renderDaily();
+  } catch (e) {
+    dailyMergeDone = false;
+    toast('合并失败：' + e.message);
+  }
+}
+
+/** 懒创建：只有点「＋ 添加任务」才创建当天唯一一篇 Todo（标题=YYYYMMDD）；打开/切换日期不创建空 Todo */
+async function createDailyDoc() {
+  if (state.daily.creating) return;
+  state.daily.creating = true;
+  try {
+    const date = state.daily.date;
+    const tpl = getDefaultTemplateByCategory(1);
+    const doc = newTodoDoc({
+      moduleType: 'daily',
+      targetDate: date,
+      title: formatDailyTodoTitle(date),
+      titleCustom: true,
+      templateId: tpl,
+      paperStyle: (templateMeta(tpl) || {}).paper || 'plain',
+      tasks: [{ id: uid('t'), text: '', completed: false, hasCheckbox: true }]
+    }, state.user);
+    await TodoRepository.createTodo(doc);
+    state.todos.push(doc);
+    state.daily.draftId = doc.id; // 始终没输入内容则离开时回收，保证不留空 Todo
+    renderDaily();
+  } finally {
+    state.daily.creating = false;
+  }
+}
+
+function scheduleDailySave() {
+  if (!dailySave) return;
+  dailySave.dirty = true;
+  clearTimeout(dailySave.timer);
+  dailySave.timer = setTimeout(() => { flushDailySave(); }, 700);
+}
+
+/** 自动保存当天 Todo：daily 标题锁死为日期，不接受编辑器标题修改 */
+async function flushDailySave() {
+  if (!dailySave || !dailySave.dirty) return;
+  const { doc, editor } = dailySave;
+  dailySave.dirty = false;
+  const tasks = normalizeTasks(editor.getPayload().tasks);
+  doc.tasks = tasks;
+  doc.isDone = isTodoCompleted(tasks);
+  doc.updateTime = Date.now();
+  doc.lastEditedBy = state.user ? state.user.ownerId : '';
+  doc.lastEditedByName = state.user ? state.user.nickName : '';
+  doc.title = formatDailyTodoTitle(doc.targetDate);
+  doc.titleCustom = true;
+  try {
+    await TodoRepository.updateTodo(doc);
+    const i = state.todos.findIndex((t) => t.id === doc.id);
+    if (i >= 0) state.todos[i] = doc;
+    if (state.daily.draftId === doc.id && tasks.some((t) => (t.text || '').trim())) state.daily.draftId = null;
+  } catch (e) {
+    dailySave.dirty = true;
+    toast('保存失败：' + e.message);
+  }
+}
+
+function destroyDailyEditor() {
+  if (state.daily.editor) { state.daily.editor.destroy(); state.daily.editor = null; }
+  if (dailySave) { clearTimeout(dailySave.timer); dailySave = null; }
+  window.__flushDailySave = null;
+}
+
+/** 懒创建后始终没有任何输入的空草稿 → 切日期/切视图/离开路由时删除 */
+function cleanupDailyDraft() {
+  const st = state.daily;
+  if (!st.draftId) return;
+  let tasks = [];
+  if (st.editor) tasks = normalizeTasks(st.editor.getPayload().tasks);
+  else if (dailySave && dailySave.doc) tasks = dailySave.doc.tasks || [];
+  const hasText = tasks.some((t) => (t.text || '').trim());
+  const id = st.draftId;
+  st.draftId = null;
+  if (!hasText) {
+    TodoRepository.deleteTodo(id);
+    state.todos = state.todos.filter((t) => t.id !== id);
+  }
+}
+
 function renderDaily() {
   const d = state.daily.date;
   const info = dayInfo(d);
-  const dayTodos = state.todos
-    .filter((t) => t.moduleType === 'daily' && t.targetDate === d)
-    .sort((a, b) => (b.updateTime || 0) - (a.updateTime || 0));
-  const shown = dayTodos.filter((t) => state.daily.filter === 'all'
-    || (state.daily.filter === 'undone' ? !t.isDone : t.isDone));
-  const allStat = dayTodos.reduce((acc, t) => {
-    const s = tasksStat(t.tasks);
-    acc.total += s.total; acc.done += s.done;
-    return acc;
-  }, { total: 0, done: 0 });
-  const pct = allStat.total ? Math.round((allStat.done / allStat.total) * 100) : 0;
+  const isToday = d === todayStr();
   document.body.classList.remove('editing');
 
-  view.innerHTML = `
+  const allDaily = state.todos.filter((t) => t.moduleType === 'daily');
+  const mergedAll = mergeDuplicateDailyTodos(allDaily);
+  const dayTodo = getDailyTodoByDate(mergedAll, d);
+  if (dayTodo && dayTodo._mergedFrom) delete dayTodo._mergedFrom;
+  const compactList = mergedAll.filter(dailyHasContent).map((t) => {
+    const s = tasksStat(t.tasks || []);
+    return {
+      id: t.id,
+      title: (t.title || '').trim() || formatDailyTodoTitle(t.targetDate),
+      date: t.targetDate,
+      done: s.done, total: s.total,
+      percent: s.total ? Math.round((s.done / s.total) * 100) : 0
+    };
+  }).sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+  const stat = dayTodo ? tasksStat(dayTodo.tasks || []) : { total: 0, done: 0, percent: 0 };
+
+  const head = `
     <div class="date-head">
       <button class="arrow-btn" id="d-prev">‹</button>
       <div>
@@ -126,45 +256,95 @@ function renderDaily() {
       </div>
       <button class="arrow-btn" id="d-next">›</button>
       <input type="date" id="d-pick" value="${d}" />
-      <button class="arrow-btn" id="d-today">回到今天</button>
+      ${isToday ? '' : '<button class="arrow-btn" id="d-today">回到今天</button>'}
       <div class="spacer"></div>
-      <button class="btn" id="d-new">＋ 新建</button>
-    </div>
-
-    <div class="card progress-card">
-      <div class="row">
-        <span class="pct">${pct}%</span>
-        <div class="spacer"></div>
-        <span>${allStat.done} / ${allStat.total} 项带勾选框任务</span>
-      </div>
-      <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
-    </div>
-
-    <div class="chips" id="d-chips">
-      <span class="chip ${state.daily.filter === 'all' ? 'active' : ''}" data-f="all">全部 ${dayTodos.length}</span>
-      <span class="chip ${state.daily.filter === 'undone' ? 'active' : ''}" data-f="undone">未完成</span>
-      <span class="chip ${state.daily.filter === 'done' ? 'active' : ''}" data-f="done">已完成</span>
-    </div>
-
-    <div id="d-list">
-      ${shown.length ? shown.map(todoCardHtml).join('') : '<div class="empty">这一天还没有 Todo，点右上角「＋ 新建」开始</div>'}
+      <button class="btn" id="d-mode">${state.daily.viewMode === 'tasks' ? '切换为缩小版' : '切换为展开视图'}</button>
     </div>`;
 
-  document.getElementById('d-prev').onclick = () => { state.daily.date = shiftDate(d, -1); renderDaily(); };
-  document.getElementById('d-next').onclick = () => { state.daily.date = shiftDate(d, 1); renderDaily(); };
-  document.getElementById('d-today').onclick = () => { state.daily.date = todayStr(); renderDaily(); };
-  document.getElementById('d-pick').onchange = (e) => { if (e.target.value) { state.daily.date = e.target.value; renderDaily(); } };
-  document.getElementById('d-new').onclick = () => { location.hash = `#/edit/new?module=daily&date=${d}`; };
-  document.getElementById('d-chips').onclick = (e) => {
-    const c = e.target.closest('.chip');
-    if (!c) return;
-    state.daily.filter = c.dataset.f;
-    renderDaily();
-  };
-  bindCards(document.getElementById('d-list'));
+  if (state.daily.viewMode === 'compact') {
+    destroyDailyEditor();
+    view.innerHTML = head + `
+      <div id="d-compact">
+        ${compactList.length ? compactList.map((c) => `
+        <div class="card daily-compact-card" data-date="${esc(c.date)}">
+          <div class="dcc-row">
+            <span class="dcc-title">${esc(c.title)}</span>
+            <span class="dcc-stat">完成 ${c.done} / ${c.total} · ${c.percent}%</span>
+          </div>
+          <div class="progress-track"><div class="progress-fill" style="width:${c.percent}%"></div></div>
+        </div>`).join('') : '<div class="empty">还没有带任务的每日 Todo，切回展开视图添加第一条任务</div>'}
+      </div>`;
+    bindDailyHead(d);
+    document.getElementById('d-compact').addEventListener('click', (e) => {
+      const card = e.target.closest('.daily-compact-card');
+      if (!card) return;
+      state.daily.date = card.dataset.date;
+      state.daily.viewMode = 'tasks';
+      renderDaily();
+    });
+    persistDailyMerge();
+    return;
+  }
+
+  /* 展开视图（默认）：不显示 Todo 卡片，直接显示当天这一篇的一条条 task */
+  view.innerHTML = head + `
+    ${dayTodo && stat.total ? `<div class="card progress-card mini-progress">
+      <div class="row"><span class="pct">${stat.percent}%</span><div class="spacer"></div>
+      <span>${stat.done} / ${stat.total} 项带勾选框任务</span></div>
+      <div class="progress-track"><div class="progress-fill" style="width:${stat.percent}%"></div></div>
+    </div>` : ''}
+    ${dayTodo ? `<div id="daily-mount"></div>
+      <div class="daily-open-row"><a class="btn sm" href="#/edit/${dayTodo.id}">模板 / 共享设置 ›</a></div>`
+    : `<div class="empty" id="daily-empty">
+        <div>${isToday ? '今日还没有任务' : '这一天还没有任务'}</div>
+        <div class="t-mut">添加第一条任务时才会创建当天 Todo（标题自动为 ${esc(formatDailyTodoTitle(d))}；查看日期不会创建空 Todo）</div>
+        <button class="btn primary" id="d-add-first">＋ 添加任务</button>
+      </div>`}`;
+
+  bindDailyHead(d);
+  persistDailyMerge();
+
+  const addBtn = document.getElementById('d-add-first');
+  if (addBtn) {
+    addBtn.onclick = () => createDailyDoc();
+    destroyDailyEditor();
+    return;
+  }
+
+  // 同一天同一篇且编辑器已挂载 → 保活，避免输入中重建丢光标
+  if (state.daily.editor && dailySave && dailySave.doc && dailySave.doc.id === dayTodo.id) return;
+  destroyDailyEditor();
+  state.daily.editor = createPaperEditor({
+    mount: document.getElementById('daily-mount'),
+    hideTitle: true, // daily 标题由系统固定为日期，不展示标题输入
+    paperClass: paperClassOf(dayTodo.templateId),
+    initial: { title: '', titleStyle: null, tasks: dayTodo.tasks || [] },
+    onChange: () => scheduleDailySave()
+  });
+  dailySave = { timer: 0, dirty: false, doc: dayTodo, editor: state.daily.editor };
+  window.__flushDailySave = flushDailySave;
 }
 
-/* ================= 专题（分类 + 筛选查找） ================= */
+function bindDailyHead(d) {
+  const set = (date) => {
+    flushDailySave();
+    cleanupDailyDraft();
+    state.daily.date = date;
+    renderDaily();
+  };
+  document.getElementById('d-prev').onclick = () => set(shiftDate(d, -1));
+  document.getElementById('d-next').onclick = () => set(shiftDate(d, 1));
+  const tb = document.getElementById('d-today');
+  if (tb) tb.onclick = () => set(todayStr());
+  document.getElementById('d-pick').onchange = (e) => { if (e.target.value) set(e.target.value); };
+  document.getElementById('d-mode').onclick = () => {
+    flushDailySave();
+    cleanupDailyDraft();
+    state.daily.viewMode = state.daily.viewMode === 'tasks' ? 'compact' : 'tasks';
+    renderDaily();
+  };
+}
+
 function renderCate() {
   document.body.classList.remove('editing');
   const opts = categoryOptions(state.user.customCategories);
@@ -313,10 +493,6 @@ async function renderEdit(idOrNew, params) {
 
   state.edit = { doc, isNew, editor: null, saveTimer: null, dirty: false };
 
-  const paperClassOf = (tplId) => {
-    const m = templateMeta(tplId);
-    return (m.cls ? m.cls + ' ' : '') + (m.paper && m.paper !== 'plain' ? 'ps-' + m.paper : '');
-  };
 
   const editor = createPaperEditor({
     mount: document.getElementById('pe-mount'),
@@ -462,7 +638,7 @@ function flushEditSave() {
   if (window.__flushEditSave) window.__flushEditSave();
   if (state.edit && state.edit.cleanupResize) state.edit.cleanupResize();
 }
-window.addEventListener('beforeunload', flushEditSave);
+window.addEventListener('beforeunload', () => { flushEditSave(); flushDailySave(); cleanupDailyDraft(); });
 
 /* ================= 群组（本地演示，字段与小程序一致） ================= */
 function renderGroups() {
@@ -518,6 +694,7 @@ function renderGroups() {
 /* ================= 我的 ================= */
 function renderMine() {
   document.body.classList.remove('editing');
+  const supa = supaState();
   const total = state.todos.length;
   const doneCnt = state.todos.filter((t) => t.isDone).length;
   const stat = state.todos.reduce((acc, t) => {
@@ -534,6 +711,21 @@ function renderMine() {
       </div>
     </div>
 
+    ${USE_SUPABASE ? `
+    <div class="card">
+      <div class="row" style="margin-bottom:8px"><b>账号与云同步（Supabase）</b></div>
+      ${supa.active ? `
+      <div class="t-mut">已登录：${esc(supa.email)}</div>
+      <div class="row" style="flex-wrap:wrap;margin-top:8px">
+        <button class="btn primary" id="m-upcloud">上传本机数据到云端</button>
+        <button class="btn ghost" id="m-signout">退出登录</button>
+      </div>
+      <div class="t-mut" style="margin-top:8px">已登录且在线时，To Do 读写云端（多设备同步）；离线或未登录时回落本机存储。</div>` : `
+      <div class="t-mut" style="line-height:1.8">输入邮箱 → 收到 Supabase 魔法链接 → 点击即完成登录（无密码）。登录后 To Do 存云端，可在多台设备同步。首次登录后建议点「上传本机数据到云端」完成迁移。</div>
+      <div class="form-row"><input class="cat-input" id="m-email" type="email" placeholder="you@example.com" /></div>
+      <div class="form-row"><button class="btn primary" id="m-login">发送登录链接</button></div>`}
+    </div>
+    ` : ''}
     <div class="card">
       <div class="row" style="margin-bottom:8px"><b>像 App 一样使用</b></div>
       <div class="t-mut" style="line-height:1.8">
@@ -571,6 +763,27 @@ function renderMine() {
     } else {
       toast('请用浏览器菜单「添加到主屏幕」安装');
     }
+  };
+  const mLoginBtn = document.getElementById('m-login');
+  if (mLoginBtn) mLoginBtn.onclick = async () => {
+    const email = (document.getElementById('m-email').value || '').trim();
+    if (!email || !email.includes('@')) { toast('请输入有效的邮箱地址'); return; }
+    mLoginBtn.disabled = true;
+    try { await signInWithEmail(email); toast('登录链接已发送，请到邮箱点击链接完成登录'); }
+    catch (e) { toast('发送失败：' + (e.message || e)); }
+    mLoginBtn.disabled = false;
+  };
+  const mUpBtn = document.getElementById('m-upcloud');
+  if (mUpBtn) mUpBtn.onclick = async () => {
+    mUpBtn.disabled = true;
+    try { const n = await uploadLocalToCloud(); toast('已上传 ' + n + ' 条 To Do 到云端'); render(); }
+    catch (e) { toast('上传失败：' + (e.message || e)); mUpBtn.disabled = false; }
+  };
+  const mOutBtn = document.getElementById('m-signout');
+  if (mOutBtn) mOutBtn.onclick = async () => {
+    if (!window.confirm('退出登录？云端数据保留，本机回到离线存储模式。')) return;
+    try { await signOutCloud(); toast('已退出登录'); } catch (e) { /* 网络异常忽略 */ }
+    render();
   };
   document.getElementById('m-catsave').onclick = async () => {
     const cats = ['', '', '', '', ''];
@@ -627,4 +840,5 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   });
 }
 
-render();
+/* v2.2：启用 Supabase 时先恢复登录会话再首渲染；登录/登出/换 token 自动整页刷新 */
+initAuth(() => { render(); }).then(() => render());
