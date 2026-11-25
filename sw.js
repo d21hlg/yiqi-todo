@@ -30,22 +30,25 @@ self.addEventListener('activate', (e) => {
 });
 
 self.addEventListener('fetch', (e) => {
-  const req = e.request;
-  if (req.method !== 'GET') return;
-  const url = new URL(req.url);
-  if (url.origin !== self.location.origin) return;
-
-  if (req.mode === 'navigate') {
+  const url = new URL(e.request.url);
+  if (e.request.method !== 'GET' || url.origin !== location.origin) return;
+  if (e.request.mode === 'navigate') {
     e.respondWith(
-      fetch(req).catch(() => caches.match('./index.html'))
+      fetch(e.request)
+        .then((res) => {
+          const cp = res.clone();
+          caches.open(CACHE).then((c) => c.put('./index.html', cp));
+          return res;
+        })
+        .catch(() => caches.match('./index.html'))
     );
     return;
   }
   e.respondWith(
-    caches.match(req).then((hit) => hit || fetch(req).then((res) => {
-      const copy = res.clone();
-      caches.open(CACHE).then((c) => c.put(req, copy));
+    caches.match(e.request).then((hit) => hit || fetch(e.request).then((res) => {
+      const cp = res.clone();
+      caches.open(CACHE).then((c) => c.put(e.request, cp));
       return res;
-    }).catch(() => hit))
+    }))
   );
 });
