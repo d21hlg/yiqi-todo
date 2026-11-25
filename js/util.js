@@ -114,9 +114,15 @@ export function segStyle(s, done) {
   return out.join(';');
 }
 
-/** 旧数据兼容：hasCheckbox 缺省视为 true（只有明确 false 才无勾选框） */
+/** 旧数据兼容：hasCheckbox 缺省视为 true；v2.1 增加 level（缺省 1）与 parentId（仅二级） */
 export function normalizeTask(task) {
-  return Object.assign({}, task, { hasCheckbox: task.hasCheckbox !== false, completed: !!task.completed });
+  const level = task.level === 2 ? 2 : 1;
+  return Object.assign({}, task, {
+    hasCheckbox: task.hasCheckbox !== false,
+    completed: !!task.completed,
+    level,
+    parentId: level === 2 ? (task.parentId || '') : undefined
+  });
 }
 
 /** tasks 数组归一（兼容老数据/无 rich） */
@@ -268,3 +274,57 @@ export function esc(s) {
 
 /* CSS 值只允许白名单字符（色号/字体 key），防止样式注入 */
 export function safeCssColor(v) { return typeof v === 'string' && isHex(v) ? v : ''; }
+
+/* ================= v2.0 每日 Todo（单日唯一一篇） ================= */
+
+/** daily Todo 标题：'YYYY-MM-DD' → 'YYYYMMDD'（如 20261125） */
+export function formatDailyTodoTitle(date) {
+  return String(date || '').replace(/-/g, '');
+}
+
+/** 找到该日期唯一一篇 daily Todo；旧数据同天多篇时取 createTime 最早的一篇 */
+export function getDailyTodoByDate(todos, date) {
+  const arr = (todos || []).filter((t) => t.moduleType === 'daily' && t.targetDate === date);
+  if (!arr.length) return null;
+  arr.sort((a, b) => (a.createTime || 0) - (b.createTime || 0));
+  return arr[0];
+}
+
+/** 该 daily Todo 是否有真实内容（至少一条非空文本 task）——空 Todo 不计入列表 */
+export function dailyHasContent(td) {
+  return !!(td && (td.tasks || []).some((t) => (t.text || '').trim()));
+}
+
+/**
+ * 兼容旧数据：同一天多篇 daily 合并为一篇（tasks 串接；createTime 取最早、updateTime 取最新；
+ * 标题统一 YYYYMMDD）。不直接删除数据；_mergedFrom 记录来源 id，由调用方决定合并落库。
+ */
+export function mergeDuplicateDailyTodos(todos) {
+  const map = new Map();
+  const result = [];
+  for (const todo of todos || []) {
+    if (todo.moduleType !== 'daily' || !todo.targetDate) { result.push(todo); continue; }
+    const key = todo.targetDate;
+    const id = todo.id || todo._id || '';
+    if (!map.has(key)) {
+      const merged = Object.assign({}, todo, {
+        title: formatDailyTodoTitle(todo.targetDate),
+        titleCustom: true,
+        tasks: (todo.tasks || []).slice(),
+        _mergedFrom: [id]
+      });
+      map.set(key, merged);
+      result.push(merged);
+      continue;
+    }
+    const exist = map.get(key);
+    exist.tasks = exist.tasks.concat(todo.tasks || []);
+    if ((todo.createTime || 0) && (todo.createTime < (exist.createTime || Infinity))) exist.createTime = todo.createTime;
+    if ((todo.updateTime || 0) > (exist.updateTime || 0)) exist.updateTime = todo.updateTime;
+    exist._mergedFrom.push(id);
+  }
+  for (const td of result) {
+    if (td._mergedFrom && td._mergedFrom.length > 1) td.isDone = isTodoCompleted(td.tasks);
+  }
+  return result;
+}

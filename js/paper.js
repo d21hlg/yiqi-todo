@@ -21,6 +21,9 @@ function newRow(task, idx) {
     id: t.id || uid('t'),
     completed: !!t.completed,
     hasCheckbox: t.hasCheckbox !== false,
+    // v2.1：level 1|2（旧数据缺省一级，方形勾选框）；二级为圆圈并记录 parentId
+    level: t.level === 2 ? 2 : 1,
+    parentId: t.level === 2 ? (t.parentId || '') : '',
     segs: segsFromTask(t)
   };
 }
@@ -47,8 +50,8 @@ export function createPaperEditor(opts) {
   /* ---------- 骨架 ---------- */
   mount.innerHTML = `
     <div class="paper ${esc(opts.paperClass || '')}" id="pe-paper">
-      <input class="todo-title-input" id="pe-title" value="${esc(titleVal)}" placeholder="请输入标题" maxlength="80" />
-      <div class="todo-title-divider"></div>
+      <input class="todo-title-input" id="pe-title" value="${esc(titleVal)}" placeholder="请输入标题" maxlength="80" ${opts.hideTitle ? 'hidden' : ''} />
+      <div class="todo-title-divider" ${opts.hideTitle ? 'hidden' : ''}></div>
       <div id="pe-rows"></div>
       <div class="paper-add" id="pe-add">＋ 添加任务</div>
     </div>
@@ -58,9 +61,14 @@ export function createPaperEditor(opts) {
         <span class="t-mut" id="pe-target">当前选中：未选择</span>
       </div>
       <div class="tool-sec">
-        <span class="lbl">勾选框</span>
+        <span class="lbl">勾选控件</span>
         <button class="tool-btn" id="pe-ckbtn" disabled>删除勾选框</button>
         <span class="t-mut" id="pe-ckhint">请先选择一行内容</span>
+      </div>
+      <div class="tool-sec">
+        <span class="lbl">层级</span>
+        <button class="tool-btn" id="pe-promote" disabled>提升为一级</button>
+        <button class="tool-btn" id="pe-demote" disabled>降级为二级</button>
       </div>
       <div class="tool-sec">
         <span class="lbl">文字格式</span>
@@ -112,6 +120,8 @@ export function createPaperEditor(opts) {
   const targetEl = $('#pe-target');
   const ckBtn = $('#pe-ckbtn');
   const ckHint = $('#pe-ckhint');
+  const promoteBtn = $('#pe-promote');
+  const demoteBtn = $('#pe-demote');
 
   titleEl.style.cssText = titleStyleCss(titleSt);
 
@@ -120,9 +130,9 @@ export function createPaperEditor(opts) {
     rowsEl.innerHTML = rows.map((r) => {
       const done = r.hasCheckbox && r.completed;
       const check = r.hasCheckbox
-        ? `<span class="pcheck ${done ? 'on' : ''}" data-act="check" data-key="${r.key}"></span>`
+        ? `<span class="pcheck ${r.level === 2 ? 'circle' : ''} ${done ? 'on' : ''}" data-act="check" data-key="${r.key}" aria-label="${done ? '取消完成' : '标记完成'}"></span>`
         : `<span class="pcheck-ghost" data-act="activate" data-key="${r.key}" title="纯文本行（无勾选框，不参与完成统计）"></span>`;
-      return `<div class="task-row ${activeRowKey === r.key ? 'active' : ''}" data-key="${r.key}">
+      return `<div class="task-row ${r.level === 2 ? 'level-2' : 'level-1'} ${activeRowKey === r.key ? 'active' : ''}" data-key="${r.key}">
         ${check}
         <div class="task-content ${done ? 'done' : ''}" contenteditable="true" spellcheck="false"
           data-ph="写一条任务…" data-key="${r.key}">${segsToHtml(r.segs, done)}</div>
@@ -139,14 +149,22 @@ export function createPaperEditor(opts) {
     let label = '未选择';
     if (titleFocused) label = '标题';
     else if (sel) label = `第 ${rowIdx(sel.key) + 1} 行 · 已选中文字`;
-    else if (activeRowKey) label = `第 ${rowIdx(activeRowKey) + 1} 行`;
+    else if (activeRowKey) {
+      const ar = rowByKey(activeRowKey);
+      label = `第 ${rowIdx(activeRowKey) + 1} 行${ar && ar.level === 2 ? ' · 二级' : ''}`;
+    }
     targetEl.textContent = '当前选中：' + label;
     const row = activeRowKey ? rowByKey(activeRowKey) : null;
     if (row && !titleFocused) {
       ckBtn.disabled = false;
       ckHint.style.display = 'none';
-      ckBtn.textContent = row.hasCheckbox ? '删除勾选框' : '添加勾选框';
+      const sub = row.level === 2;
+      ckBtn.textContent = row.hasCheckbox ? (sub ? '删除圆圈' : '删除勾选框') : (sub ? '添加圆圈' : '添加勾选框');
+      promoteBtn.disabled = false;
+      demoteBtn.disabled = false;
     } else {
+      promoteBtn.disabled = true;
+      demoteBtn.disabled = true;
       ckBtn.disabled = true;
       ckBtn.textContent = titleFocused ? '添加/删除勾选框' : '添加勾选框 / 删除勾选框';
       ckHint.style.display = '';
@@ -166,8 +184,10 @@ export function createPaperEditor(opts) {
           id: r.id,
           text,
           completed: !!(r.hasCheckbox && r.completed),
-          hasCheckbox: r.hasCheckbox
+          hasCheckbox: r.hasCheckbox,
+          level: r.level === 2 ? 2 : 1
         };
+        if (task.level === 2 && r.parentId) task.parentId = r.parentId;
         if (rich) task.rich = rich;
         return task;
       })
@@ -235,7 +255,7 @@ export function createPaperEditor(opts) {
     el.innerHTML = segsToHtml(row.segs, done);
     const chk = el.parentNode.querySelector('.pcheck, .pcheck-ghost');
     if (chk) {
-      chk.className = row.hasCheckbox ? `pcheck ${done ? 'on' : ''}` : 'pcheck-ghost';
+      chk.className = row.hasCheckbox ? `pcheck ${row.level === 2 ? 'circle' : ''} ${done ? 'on' : ''}` : 'pcheck-ghost';
     }
     if (caretOffset != null) setCaret(el, caretOffset);
   }
@@ -521,7 +541,105 @@ export function createPaperEditor(opts) {
     rerenderRow(row.key, null);
     syncTarget();
     emit();
-    toast(row.hasCheckbox ? '已添加勾选框' : '已改为纯文本行（不参与完成统计）');
+    toast(row.hasCheckbox
+      ? (row.level === 2 ? '已添加圆圈' : '已添加勾选框')
+      : '已改为纯文本行（不参与完成统计）');
+  });
+
+  /* ---------- v2.1 层级：提升为一级 / 降级为二级 ---------- */
+  function promoteRow() {
+    const row = rowByKey(activeRowKey);
+    if (!row || titleFocused) { toast('请先选择一行内容'); return; }
+    if (row.level !== 2) { toast('当前已是一级任务'); return; }
+    row.level = 1;
+    row.parentId = '';
+    renderRows();
+    syncTarget();
+    emit();
+    toast('已提升为一级任务（方形勾选框）');
+  }
+
+  function demoteRow() {
+    const row = rowByKey(activeRowKey);
+    if (!row || titleFocused) { toast('请先选择一行内容'); return; }
+    if (row.level === 2) { toast('当前已是二级任务'); return; }
+    const idx = rowIdx(row.key);
+    let parent = null;
+    for (let i = idx - 1; i >= 0; i--) {
+      if ((rows[i].level || 1) === 1) { parent = rows[i]; break; }
+    }
+    if (!parent) { toast('上方没有可归属的一级任务'); return; }
+    row.level = 2;
+    row.parentId = parent.id;
+    renderRows();
+    syncTarget();
+    emit();
+    toast('已降级为二级任务（圆圈）');
+  }
+  promoteBtn.addEventListener('click', promoteRow);
+  demoteBtn.addEventListener('click', demoteRow);
+
+  /* ---------- v2.1 键盘：Enter=下方新建二级；行首 Backspace=删除勾选控件 ---------- */
+  function caretAtStart(el) {
+    const s = window.getSelection();
+    if (!s || !s.rangeCount || !s.isCollapsed) return false;
+    const r = s.getRangeAt(0);
+    if (!el.contains(r.startContainer)) return false;
+    let acc = 0;
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    while (walker.nextNode()) {
+      const n = walker.currentNode;
+      if (n === r.startContainer) return acc + r.startOffset === 0;
+      acc += n.textContent.length;
+    }
+    return false;
+  }
+
+  rowsEl.addEventListener('keydown', (e) => {
+    const el = e.target.closest && e.target.closest('.task-content');
+    if (!el) return;
+    const key = el.dataset.key;
+    const row = rowByKey(key);
+    if (!row) return;
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      row.segs = parseRowEl(el); // 先固化当前行输入
+      let parentId = '';
+      if (row.level === 2) {
+        parentId = row.parentId || '';
+        if (!parentId) {
+          const idx = rowIdx(key);
+          for (let i = idx - 1; i >= 0; i--) {
+            if ((rows[i].level || 1) === 1) { parentId = rows[i].id; break; }
+          }
+        }
+      } else {
+        parentId = row.id;
+      }
+      if (rows.length >= 50) { toast('一张纸最多 50 行'); return; }
+      const nr = newRow(parentId
+        ? { id: uid('t'), hasCheckbox: true, level: 2, parentId }
+        : { id: uid('t'), hasCheckbox: true, level: 1 }, rows.length);
+      rows.splice(rowIdx(key) + 1, 0, nr);
+      activeRowKey = nr.key;
+      sel = null;
+      renderRows();
+      syncTarget();
+      emit();
+      const nEl = elByKey(nr.key);
+      if (nEl) nEl.focus();
+    } else if (e.key === 'Backspace') {
+      // 行首按 Backspace：有勾选框/圆圈时只删勾选控件，不删文字与格式
+      if (row.hasCheckbox !== false && caretAtStart(el)) {
+        e.preventDefault();
+        row.hasCheckbox = false;
+        row.completed = false;
+        rerenderRow(key, 0);
+        syncTarget();
+        emit();
+        toast(row.level === 2 ? '已删除圆圈（文字保留）' : '已删除勾选框（文字保留）');
+      }
+    }
   });
 
   // 工具面板 + 浮动条的事件委托（data-fmt / data-size / data-c / data-bg / data-clear）
