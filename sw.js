@@ -3,7 +3,7 @@
  * - 页面导航：网络优先，失败回退缓存 index.html（离线壳）
  * - 静态资源：缓存优先，命中后台不刷新；未命中走网络并写缓存
  */
-const CACHE = 'yiqi-todo-v5';
+const CACHE = 'yiqi-todo-v6';
 const PRECACHE = [
   './',
   './index.html',
@@ -44,11 +44,12 @@ self.addEventListener('fetch', (e) => {
     );
     return;
   }
+  /* v2.2.2：静态资源网络优先 + 成功回写缓存（保证更新必达），断网才回落缓存 */
   e.respondWith(
-    caches.match(req).then((hit) => hit || fetch(req).then((res) => {
+    fetch(req).then((res) => {
       const copy = res.clone();
       caches.open(CACHE).then((c) => c.put(req, copy));
       return res;
-    }).catch(() => hit))
+    }).catch(() => caches.match(req))
   );
 });
