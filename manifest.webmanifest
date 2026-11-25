@@ -1,0 +1,16 @@
+{
+  "name": "一起 To Do",
+  "short_name": "一起Todo",
+  "description": "每天一件事，专注当下；专题分类整理的 Todo App（网页版）",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f5fcf5",
+  "theme_color": "#7fcf91",
+  "orientation": "portrait-primary",
+  "lang": "zh-CN",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
