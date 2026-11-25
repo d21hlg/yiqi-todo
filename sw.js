@@ -3,7 +3,7 @@
  * - 页面导航：网络优先，失败回退缓存 index.html（离线壳）
  * - 静态资源：缓存优先，命中后台不刷新；未命中走网络并写缓存
  */
-const CACHE = 'yiqi-todo-v4';
+const CACHE = 'yiqi-todo-v5';
 const PRECACHE = [
   './',
   './index.html',
@@ -12,6 +12,9 @@ const PRECACHE = [
   './js/app.js',
   './js/paper.js',
   './js/db.js', './js/config.js', './js/supabase-db.js',
+  './js/supabase-js.js', './js/sbv-auth-js.js', './js/sbv-functions-js.js',
+  './js/sbv-postgrest-js.js', './js/sbv-realtime-js.js', './js/sbv-storage-js.js',
+  './js/sbv-extra-1.js', './js/sbv-extra-2.js', './js/sbv-extra-3.js',
   './js/util.js',
   './icons/icon-192.png',
   './icons/icon-512.png'
@@ -30,25 +33,22 @@ self.addEventListener('activate', (e) => {
 });
 
 self.addEventListener('fetch', (e) => {
-  const url = new URL(e.request.url);
-  if (e.request.method !== 'GET' || url.origin !== location.origin) return;
-  if (e.request.mode === 'navigate') {
+  const req = e.request;
+  if (req.method !== 'GET') return;
+  const url = new URL(req.url);
+  if (url.origin !== self.location.origin) return;
+
+  if (req.mode === 'navigate') {
     e.respondWith(
-      fetch(e.request)
-        .then((res) => {
-          const cp = res.clone();
-          caches.open(CACHE).then((c) => c.put('./index.html', cp));
-          return res;
-        })
-        .catch(() => caches.match('./index.html'))
+      fetch(req).catch(() => caches.match('./index.html'))
     );
     return;
   }
   e.respondWith(
-    caches.match(e.request).then((hit) => hit || fetch(e.request).then((res) => {
-      const cp = res.clone();
-      caches.open(CACHE).then((c) => c.put(e.request, cp));
+    caches.match(req).then((hit) => hit || fetch(req).then((res) => {
+      const copy = res.clone();
+      caches.open(CACHE).then((c) => c.put(req, copy));
       return res;
-    }))
+    }).catch(() => hit))
   );
 });
