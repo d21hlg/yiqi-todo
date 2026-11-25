@@ -11,11 +11,12 @@ let _loading = null;
 function client() {
   if (_sb) return Promise.resolve(_sb);
   if (!_loading) {
-    _loading = import('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm')
+    _loading = import('./supabase-js.js') /* 本地 vendor 副本，零 CDN 依赖 */
       .then((m) => m.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
         auth: { persistSession: true, autoRefreshToken: true }
       }))
-      .then((c) => { _sb = c; return c; });
+      .then((c) => { _sb = c; return c; })
+      .catch((e) => { _loading = null; throw e; }); /* 失败可重试 */
   }
   return _loading;
 }
@@ -34,7 +35,10 @@ export function supaState() {
 export async function initAuth(onChange) {
   if (!USE_SUPABASE) return;
   try {
-    const c = await client();
+    const c = await Promise.race([
+      client(),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('SDK 加载超时')), 15000))
+    ]);
     const { data } = await c.auth.getSession();
     st.session = data.session || null;
     c.auth.onAuthStateChange((event, session) => {

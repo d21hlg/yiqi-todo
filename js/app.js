@@ -840,5 +840,8 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   });
 }
 
-/* v2.2：启用 Supabase 时先恢复登录会话再首渲染；登录/登出/换 token 自动整页刷新 */
-initAuth(() => { render(); }).then(() => render());
+/* v2.2.1：首渲染立即执行、不被 SDK 加载阻塞；登录会话后台恢复，完成后自动整页刷新 */
+render();
+initAuth(() => { render(); })
+  .then(() => { if (supaState().active) render(); })
+  .catch(() => { /* SDK 加载失败：保持本地模式，登录按钮会提示重试 */ });
