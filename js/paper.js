@@ -38,6 +38,8 @@ function segsToHtml(segs, done) {
 export function createPaperEditor(opts) {
   const mount = opts.mount;
   const readonly = opts.editable === false; // 必须在所有使用点之前声明（TDZ 修复）
+  // 浮动条已废弃（v2.4 改为 sticky 工具卡），保留桩对象兼容旧引用
+  const floatBar = { classList: { add() {}, remove() {}, toggle() {} }, style: {}, addEventListener() {}, remove() {} };
   const onChange = opts.onChange || (() => {});
   const rows = (opts.initial && opts.initial.tasks && opts.initial.tasks.length
     ? opts.initial.tasks : [null]).map((t, i) => newRow(t, i));
@@ -56,19 +58,16 @@ export function createPaperEditor(opts) {
       <div id="pe-rows"></div>
       <div class="paper-add" id="pe-add">＋ 添加任务</div>
     </div>
-    <div class="card tools-card" id="pe-tools">
+    <div class="card tools-card is-hidden" id="pe-tools">
       <div class="tools-head">
-        <span class="tools-title">编辑工具</span>
+        <span class="tools-title">文字编辑</span>
         <span class="t-mut" id="pe-target">当前选中：未选择</span>
       </div>
       <div class="tool-l1">
-        <button class="tool-btn l1" data-pan="fmt">文字</button>
+        <button class="tool-btn l1" data-pan="fmt">样式</button>
         <button class="tool-btn l1" data-pan="size">字号</button>
-        <button class="tool-btn l1" data-pan="color">颜色</button>
-        <button class="tool-btn l1" data-pan="bg">背景</button>
-        <button class="tool-btn l1" data-pan="tpl">模板</button>
-        <button class="tool-btn l1" data-pan="share">共享</button>
-        <button class="tool-btn l1" data-pan="more">更多</button>
+        <button class="tool-btn l1" data-pan="color">文字色</button>
+        <button class="tool-btn l1" data-pan="bg">背景色</button>
       </div>
       <div class="tool-pan" id="pe-pan-fmt" hidden>
         <span class="tool chip-b" data-fmt="b">B</span>
@@ -93,24 +92,7 @@ export function createPaperEditor(opts) {
         ${COLORS.map((c) => `<span class="dot" data-bg="${c.soft}" style="background:${c.soft}" title="${c.name}"></span>`).join('')}
         <input class="hex-input" id="pe-hexbg" placeholder="#f8e7a1" maxlength="7" />
       </div>
-      <div class="tool-pan pan-slot" id="pe-slot-tpl" hidden></div>
-      <div class="tool-pan pan-slot" id="pe-slot-share" hidden></div>
-      <div class="tool-pan pan-slot" id="pe-slot-more" hidden></div>
     </div>`;
-
-  // 浮动格式条（选中文字后出现，移动端友好）
-  const floatBar = document.createElement('div');
-  floatBar.className = 'float-bar';
-  floatBar.innerHTML = `
-    <span class="fb" data-fmt="b"><b>B</b></span>
-    <span class="fb" data-fmt="i"><i>I</i></span>
-    <span class="fb" data-fmt="u"><u>U</u></span>
-    <span class="fb" data-fmt="s"><s>S</s></span>
-    <span class="fb" data-size="1">小</span>
-    <span class="fb" data-size="2">大</span>
-    ${COLORS.slice(0, 6).map((c) => `<span class="fb" data-c="${c.accent}" style="color:${c.accent}">●</span>`).join('')}
-    <span class="fb" data-clear="1">清除</span>`;
-  if (!readonly) document.body.appendChild(floatBar);
 
   const $ = (sel2) => mount.querySelector(sel2);
   if (readonly) mount.classList.add('pe-readonly');
@@ -307,6 +289,7 @@ export function createPaperEditor(opts) {
   }
 
   function positionFloatBar() {
+    showTools();
     const s = window.getSelection();
     if (!s || s.rangeCount === 0 || s.isCollapsed) { floatBar.classList.remove('show'); return; }
     const rect = s.getRangeAt(0).getBoundingClientRect();
@@ -656,7 +639,7 @@ export function createPaperEditor(opts) {
   // 一级按钮 → 展开/收起对应二级面板
   function togglePan(id) {
     console.log('[Toolbar] clicked panel:', id);
-    const target = mount.querySelector('#pe-pan-' + id) || mount.querySelector('#pe-slot-' + id);
+    const target = mount.querySelector('#pe-pan-' + id);
     const isOpen = target && !target.hidden;
     mount.querySelectorAll('.tool-pan').forEach((p) => { p.hidden = true; });
     mount.querySelectorAll('.tool-btn.l1').forEach((b) => b.classList.remove('on'));
@@ -664,11 +647,6 @@ export function createPaperEditor(opts) {
       target.hidden = false;
       const btn = mount.querySelector(`.tool-btn.l1[data-pan="${id}"]`);
       if (btn) btn.classList.add('on');
-      if ((id === 'tpl' || id === 'share' || id === 'more')
-        && typeof opts.onPanelOpen === 'function' && !target.dataset.filled) {
-        opts.onPanelOpen(id, target);
-        target.dataset.filled = '1';
-      }
     }
   }
 
@@ -689,8 +667,6 @@ export function createPaperEditor(opts) {
     e.preventDefault();
   }
   $('#pe-tools').addEventListener('click', onToolClick);
-  floatBar.addEventListener('mousedown', (e) => e.preventDefault()); // 防止点浮动条丢选区
-  floatBar.addEventListener('click', onToolClick);
 
   const hexc = $('#pe-hexc');
   const hexbg = $('#pe-hexbg');
@@ -706,6 +682,30 @@ export function createPaperEditor(opts) {
   hexbg.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); commitHex(hexbg, 'bg')(); hexbg.blur(); } });
 
   $('#pe-clear').addEventListener('click', clearFormat);
+
+  /* ---- v2.4 工具卡自动显隐：点进 task 出现，失焦 180ms 后收起 ---- */
+  let hideTimer = 0;
+  function showTools() {
+    clearTimeout(hideTimer);
+    const t = $('#pe-tools');
+    if (t && !readonly) t.classList.remove('is-hidden');
+  }
+  function scheduleHideTools() {
+    clearTimeout(hideTimer);
+    hideTimer = setTimeout(() => {
+      const t = $('#pe-tools');
+      if (t) t.classList.add('is-hidden');
+    }, 180);
+  }
+  mount.addEventListener('focusin', (e) => {
+    if (e.target.closest && e.target.closest('#pe-rows, #pe-title, #pe-tools')) showTools();
+  });
+  mount.addEventListener('focusout', () => {
+    setTimeout(() => {
+      const ae = document.activeElement;
+      if (!ae || !ae.closest || !ae.closest('#pe-rows, #pe-title, #pe-tools')) scheduleHideTools();
+    }, 0);
+  });
 
   document.addEventListener('selectionchange', onSelectionChange);
 
@@ -724,7 +724,6 @@ export function createPaperEditor(opts) {
     destroy() {
       destroyed = true;
       document.removeEventListener('selectionchange', onSelectionChange);
-      if (!readonly) floatBar.remove();
       mount.innerHTML = '';
     }
   };

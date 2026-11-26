@@ -331,3 +331,19 @@ body.no-tab #view { padding-bottom: 130px; }
     radial-gradient(circle, rgba(157,196,164,.25) 0 2px, transparent 3px);
   background-size: 120px 110px, 70px 64px; background-attachment: fixed;
 }
+
+/* ==== v2.4 文字编辑工具卡：贴近输入、自动显隐 ==== */
+#pe-tools {
+  position: sticky;
+  bottom: calc(8px + env(safe-area-inset-bottom));
+  z-index: 80;
+  pointer-events: auto;
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(12px);
+}
+#pe-tools.is-hidden { display: none; }
+#pe-tools button, #pe-tools .tool, #pe-tools .dot { pointer-events: auto; }
+/* Todo 下方独立设置区：模板 / 共享 / 更多 */
+.todo-bottom-actions { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 12px; }
+.todo-bottom-actions .btn { border-radius: 999px; }
+.todo-bottom-actions + .tool-pan { border-top: none; }

@@ -3,7 +3,7 @@
  * - 同源 GET 全部「网络优先」：在线永远最新，失败才回退缓存（离线壳）
  * - activate 删除所有旧缓存，防止旧 js 残留
  */
-const CACHE = 'yiqi-todo-v10';
+const CACHE = 'yiqi-todo-v11';
 
 self.addEventListener('install', () => { self.skipWaiting(); });
 

@@ -389,9 +389,31 @@ export const THEME_BGS = [
   { id: 'star', name: '小星星背景' },
   { id: 'flower', name: '小花背景' }
 ];
-/* 法定工作日：本地可配置日历（节假日/调休），无联网依赖 */
+/* 中国法定节假日内置表（以国务院办公厅每年通知为准；未内置年份会在界面提示手动配置） */
+export const CHINA_CALENDAR = {
+  2026: {
+    holidays: ['2026-01-01', '2026-01-02', '2026-01-03',
+      '2026-02-15', '2026-02-16', '2026-02-17', '2026-02-18', '2026-02-19', '2026-02-20', '2026-02-21', '2026-02-22',
+      '2026-04-04', '2026-04-05', '2026-04-06',
+      '2026-05-01', '2026-05-02', '2026-05-03', '2026-05-04', '2026-05-05',
+      '2026-06-19', '2026-06-20', '2026-06-21',
+      '2026-09-25', '2026-09-26', '2026-09-27',
+      '2026-10-01', '2026-10-02', '2026-10-03', '2026-10-04', '2026-10-05', '2026-10-06', '2026-10-07'],
+    extraWorkdays: ['2026-01-04', '2026-02-14', '2026-02-28', '2026-10-10']
+  }
+};
+export function chinaCalendarFor(year) {
+  const c = CHINA_CALENDAR[year];
+  return c ? { year: Number(year), holidays: c.holidays.slice(), extraWorkdays: c.extraWorkdays.slice(), configured: true } : null;
+}
+export function isChinaLegalHoliday(dateStr, cal) {
+  const y = Number(String(dateStr).slice(0, 4));
+  const c = (cal && cal.year === y) ? cal : (CHINA_CALENDAR[y] || null);
+  return !!(c && (c.holidays || []).includes(dateStr));
+}
+/* 法定工作日：优先用户配置/内置中国日历；无配置年份=周一至周五并提示未配置 */
 export function defaultCalendar(year) {
-  return { year: year, holidays: [], extraWorkdays: [] };
+  return chinaCalendarFor(year) || { year: year, holidays: [], extraWorkdays: [], configured: false };
 }
 export function isLegalWorkday(dateStr, cal) {
   const c = cal || { holidays: [], extraWorkdays: [] };
@@ -420,6 +442,8 @@ export function datesForRule(rule, start, end, cal) {
       if ((rule.weekdays || []).includes(norm)) out.push(cur);
     } else if (rule.type === 'legal-workday') {
       if (isLegalWorkday(cur, cal)) out.push(cur);
+    } else if (rule.type === 'legal-holiday') {
+      if (isChinaLegalHoliday(cur, cal)) out.push(cur);
     } else if (rule.type === 'date-range') {
       if (rule.startDate && rule.endDate && cur >= rule.startDate && cur <= rule.endDate) out.push(cur);
     }

@@ -17,8 +17,16 @@ function useCloud() {
 const DB_NAME = 'yiqi-todo-web';
 const DB_VER = 1;
 let dbPromise = null;
+let MEM = null; // IndexedDB 不可用（隐私模式/个别手机浏览器）时降级内存，保证不白屏
+
+function memStore(store) {
+  if (!MEM) MEM = { todos: [], groups: [], meta: [] };
+  if (!MEM[store]) MEM[store] = [];
+  return MEM[store];
+}
 
 function openDB() {
+  if (MEM) return Promise.resolve(null);
   if (dbPromise) return dbPromise;
   dbPromise = new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VER);
@@ -40,18 +48,38 @@ function openDB() {
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
+  }).catch((e) => {
+    console.error('[Storage] IndexedDB 打开失败，降级为内存存储（本次会话修改不持久化）:', e);
+    MEM = { todos: [], groups: [], meta: [] };
+    return null;
   });
   return dbPromise;
 }
 
 function tx(store, mode, fn) {
-  return openDB().then((db) => new Promise((resolve, reject) => {
-    const t = db.transaction(store, mode);
-    const req = fn(t.objectStore(store));
-    t.oncomplete = () => resolve(req && req.result !== undefined ? req.result : undefined);
-    t.onerror = () => reject(t.error);
-    t.onabort = () => reject(t.error);
-  }));
+  return openDB().then((db) => {
+    if (db) {
+      return new Promise((resolve, reject) => {
+        const t = db.transaction(store, mode);
+        const req = fn(t.objectStore(store));
+        t.oncomplete = () => resolve(req && req.result !== undefined ? req.result : undefined);
+        t.onerror = () => reject(t.error);
+        t.onabort = () => reject(t.error);
+      });
+    }
+    // 内存降级路径
+    const arr = memStore(store);
+    const fakeReq = { result: undefined };
+    const keyOf = (v) => (store === 'meta' ? v.key : v.id);
+    const fakeStore = {
+      getAll: () => { fakeReq.result = arr.map((x) => Object.assign({}, x)); return fakeReq; },
+      get: (k) => { const hit = arr.find((x) => keyOf(x) === k); fakeReq.result = hit ? Object.assign({}, hit) : undefined; return fakeReq; },
+      put: (v) => { const i = arr.findIndex((x) => keyOf(x) === keyOf(v)); if (i >= 0) arr[i] = Object.assign({}, v); else arr.push(Object.assign({}, v)); return fakeReq; },
+      delete: (k) => { const i = arr.findIndex((x) => keyOf(x) === k); if (i >= 0) arr.splice(i, 1); return fakeReq; }
+    };
+    const req = fn(fakeStore);
+    return Promise.resolve(req && req.result !== undefined ? req.result : undefined);
+  });
 }
 
 const getAll = (store) => tx(store, 'readonly', (s) => s.getAll());

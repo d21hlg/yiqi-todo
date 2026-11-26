@@ -11,7 +11,7 @@ import { TodoRepository, GroupRepository, getLocalUser, saveLocalUser, newTodoDo
 import { USE_SUPABASE } from './config.js';
 import { initAuth, supaState, signInWithEmail, signOutCloud, verifyWithCode, signInWithPasswordOrSignup } from './supabase-db.js';
 import { createPaperEditor } from './paper.js';
-import { getTodoProgress, weekUnfinishedDates, fmtShortDate, sortTopicTodos, THEMES, THEME_BGS, datesForRule, hasTaskFromRule, defaultCalendar } from './util.js';
+import { getTodoProgress, weekUnfinishedDates, fmtShortDate, sortTopicTodos, THEMES, THEME_BGS, datesForRule, hasTaskFromRule, defaultCalendar, isChinaLegalHoliday } from './util.js';
 import { getMeta, setMeta, localSnapshot } from './db.js';
 
 const view = document.getElementById('view');
@@ -47,7 +47,12 @@ async function loadPrefs() {
   if (pref) state.pref = Object.assign(state.pref, pref);
   if (theme) state.theme = Object.assign(state.theme, theme);
   if (rules) state.bulkRules = rules;
-  state.workdayCal = cal || defaultCalendar(new Date().getFullYear());
+  const yy = new Date().getFullYear();
+  let wcal = cal;
+  if (!wcal || ((!wcal.holidays || !wcal.holidays.length) && (!wcal.extraWorkdays || !wcal.extraWorkdays.length) && !wcal.userEdited)) {
+    wcal = defaultCalendar(yy); // 内置中国日历；未内置年份 configured=false → 界面提示
+  }
+  state.workdayCal = wcal;
   state.daily.viewMode = state.pref.dailyMode === 'compact' ? 'compact' : 'tasks';
   state.daily.date = state.daily.date || todayStr();
   applyTheme();
@@ -122,8 +127,10 @@ async function render() {
     else if (route === 'edit') await renderEdit(parts[1], params);
     else renderDaily();
   }
+  window.__booted = true;
   } catch (err) {
     console.error('[DailyPage] load failed:', err);
+    window.__booted = true; // 错误边界也算启动成功（有可见反馈）
     try {
       view.innerHTML = `<div class="card empty">
         <div>页面加载失败</div>
@@ -385,7 +392,13 @@ function renderDaily() {
         <div class="progress-track"><div class="progress-fill" id="d-fill" style="width:${stat ? stat.progressPercent : 0}%"></div></div>
       </div>
       ${dayTodo ? `<div id="daily-mount"></div>
-        <div class="daily-open-row"><a class="btn sm" href="#/edit/${dayTodo.id}">修改 / 模板 / 共享 ›</a></div>`
+        <div class="card todo-bottom-actions" id="d-bottom">
+          <button class="btn" data-bpan="tpl">模板</button>
+          <button class="btn" data-bpan="share">共享</button>
+          <button class="btn" data-bpan="more">更多</button>
+        </div>
+        <div class="tool-pan pan-slot" id="d-bslot" hidden></div>
+        <div class="daily-open-row"><a class="btn sm" href="#/edit/${dayTodo.id}">整篇设置 / 跳转详情页 ›</a></div>`
       : `<div class="empty" id="daily-empty">
           <div>${isToday ? '今日还没有任务' : '这一天还没有任务'}</div>
           <div class="t-mut">添加第一条任务时才会创建当天 Todo（标题自动为 ${esc(formatDailyTodoTitle(d))}；查看日期不会创建空 Todo）</div>
@@ -431,9 +444,10 @@ function renderDaily() {
     editable: true, // v2.3.2 hotfix：放大版=可编辑+一级编辑栏可点开（上轮只读化是回归根因）
     paperClass: '', // 模板样式由整页容器 .todo-page 承载，避免双层背景
     initial: { title: '', titleStyle: null, tasks: dayTodo.tasks || [] },
-    onChange: (payload) => { updateProgressDom('d', payload.tasks); scheduleDailySave(); },
-    onPanelOpen: makePanelOpener(() => state.daily.editor, () => (dailySave && dailySave.doc) || dayTodo, () => scheduleDailySave())
+    onChange: (payload) => { updateProgressDom('d', payload.tasks); scheduleDailySave(); }
   });
+  bindBottomActions('d-bottom', 'd-bslot',
+    makePanelOpener(() => state.daily.editor, () => (dailySave && dailySave.doc) || dayTodo, () => scheduleDailySave()));
   dailySave = { timer: 0, dirty: false, doc: dayTodo, editor: state.daily.editor };
   window.__flushDailySave = flushDailySave;
 }
@@ -596,6 +610,12 @@ function renderCate() {
           <div class="progress-track"><div class="progress-fill" id="c-fill" style="width:${stat.progressPercent}%"></div></div>
         </div>
         <div id="cate-mount"></div>
+        <div class="card todo-bottom-actions" id="c-bottom">
+          <button class="btn" data-bpan="tpl">模板</button>
+          <button class="btn" data-bpan="share">共享</button>
+          <button class="btn" data-bpan="more">更多</button>
+        </div>
+        <div class="tool-pan pan-slot" id="c-bslot" hidden></div>
       </div>`;
     document.getElementById('c-pick').onchange = (e) => {
       state.pref.lastCateTodoId = e.target.value;
@@ -616,9 +636,10 @@ function renderCate() {
       editable: true,
       paperClass: '',
       initial: { title: '', titleStyle: null, tasks: doc.tasks || [] },
-      onChange: (payload) => { updateProgressDom('c', payload.tasks); scheduleCateSave(); },
-      onPanelOpen: makePanelOpener(() => state.cate.editor, () => (cateSave && cateSave.doc) || doc, () => scheduleCateSave())
+      onChange: (payload) => { updateProgressDom('c', payload.tasks); scheduleCateSave(); }
     });
+    bindBottomActions('c-bottom', 'c-bslot',
+      makePanelOpener(() => state.cate.editor, () => (cateSave && cateSave.doc) || doc, () => scheduleCateSave()));
     cateSave = { timer: 0, dirty: false, doc, editor };
     state.cate.doc = doc;
     state.cate.editor = editor;
@@ -646,6 +667,31 @@ function renderCate() {
   };
   document.getElementById('f-new').onclick = () => { location.hash = '#/edit/new?module=categorized'; };
   updateList();
+}
+
+/* ---------- v2.4 Todo 下方独立设置区（模板/共享/更多），与文字编辑栏分离 ---------- */
+function bindBottomActions(barId, slotId, opener) {
+  const bar = document.getElementById(barId);
+  const slot = document.getElementById(slotId);
+  if (!bar || !slot) return;
+  let active = '';
+  bar.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-bpan]');
+    if (!b) return;
+    const id = b.dataset.bpan;
+    console.log('[BottomBar] panel:', id);
+    if (active === id) {
+      slot.hidden = true;
+      active = '';
+      bar.querySelectorAll('[data-bpan]').forEach((x) => x.classList.remove('on'));
+      return;
+    }
+    active = id;
+    bar.querySelectorAll('[data-bpan]').forEach((x) => x.classList.toggle('on', x === b));
+    slot.innerHTML = '';
+    slot.hidden = false;
+    opener(id, slot);
+  });
 }
 
 /* ---------- v2.3.2 共享面板生成器：今日/专题放大版的编辑工具面板 ---------- */
@@ -676,11 +722,20 @@ function makePanelOpener(getEditor, getDoc, afterChange) {
           <option value="">选择群组…</option>
           ${state.groups.map((g) => `<option value="${g.id}" ${doc.groupId === g.id ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}
         </select></div>
+        ${doc.groupId ? '<div class="form-row"><button class="btn ghost" id="p-copy">复制邀请码</button></div>' : ''}
         ${!state.groups.length ? '<div class="t-mut">还没有群组：登录云端后在「群组」页创建</div>' : ''}`;
       const sw = slot.querySelector('#p-share');
       const gp = slot.querySelector('#p-group');
       sw.onclick = () => { doc.isShared = !doc.isShared; sw.classList.toggle('on', doc.isShared); gp.disabled = !doc.isShared; afterChange(); };
       gp.onchange = () => { doc.groupId = gp.value; afterChange(); };
+      const cp = slot.querySelector('#p-copy');
+      if (cp) cp.onclick = () => {
+        const g = state.groups.find((x) => x.id === doc.groupId);
+        if (!g) return;
+        const txt = g.inviteCode;
+        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(txt).then(() => toast('邀请码已复制：' + txt), () => toast('邀请码：' + txt));
+        else toast('邀请码：' + txt);
+      };
     } else if (id === 'more') {
       renderBulkPanel(slot);
     }
@@ -696,8 +751,9 @@ function renderBulkPanel(slot) {
     <div class="form-row"><input class="cat-input" id="bk-text" placeholder="任务文字，如：早上吃药" /></div>
     <div class="form-row">
       <select id="bk-type" class="cat-input">
-        <option value="weekly">每周几</option>
-        <option value="legal-workday">法定工作日</option>
+        <option value="weekly">每周重复</option>
+        <option value="legal-workday">中国法定工作日</option>
+        <option value="legal-holiday">中国法定节假日</option>
         <option value="date-range">指定日期范围</option>
       </select>
     </div>
@@ -708,6 +764,7 @@ function renderBulkPanel(slot) {
     </div>
     <div class="form-row"><label class="t-mut"><input type="checkbox" id="bk-check" checked /> 带勾选框（参与完成统计）</label></div>
     <div class="form-row"><button class="btn primary" id="bk-run">生成到每日 Todo</button></div>
+    ${cal.configured === false ? `<div class="t-mut" style="margin:6px 0">『${cal.year} 年』中国法定节假日尚未内置（以国务院当年通知为准），请在下方手动配置节假日与调休补班日。</div>` : `<div class="t-mut" style="margin:6px 0">已按中国 ${cal.year} 年日历识别节假日/调休；可在下方手动修正。</div>`}
     <div class="pan-lbl" style="margin-top:10px">法定节假日日历（本地配置，可调休）</div>
     <div class="form-row"><textarea class="cat-input" id="bk-hol" rows="2" placeholder="节假日，逗号分隔：2026-01-01,2026-01-02">${(cal.holidays || []).join(',')}</textarea></div>
     <div class="form-row"><textarea class="cat-input" id="bk-extra" rows="2" placeholder="调休上班日，逗号分隔">${(cal.extraWorkdays || []).join(',')}</textarea></div>
@@ -724,7 +781,7 @@ function renderBulkPanel(slot) {
   slot.querySelectorAll('[data-wd]').forEach((c) => { c.onclick = () => c.classList.toggle('on'); });
   slot.querySelector('#bk-cal').onclick = () => {
     const parse = (v) => String(v || '').split(/[,，\s]+/).map((x) => x.trim()).filter(Boolean);
-    state.workdayCal = Object.assign({}, cal, { holidays: parse(slot.querySelector('#bk-hol').value), extraWorkdays: parse(slot.querySelector('#bk-extra').value) });
+    state.workdayCal = Object.assign({}, cal, { holidays: parse(slot.querySelector('#bk-hol').value), extraWorkdays: parse(slot.querySelector('#bk-extra').value), userEdited: true });
     setMeta('workdayCal', state.workdayCal);
     toast('日历已保存');
   };
@@ -809,7 +866,15 @@ async function renderEdit(idOrNew, params) {
       <button class="btn" id="e-save">${isNew ? '保存' : '保存'}</button>
     </div>
     <div class="edit-layout">
-      <div class="edit-main"><div id="pe-mount"></div></div>
+      <div class="edit-main"><div id="pe-mount"></div>
+        <div class="card todo-bottom-actions" id="e-bottom">
+          <button class="btn" data-bpan="tpl">模板</button>
+          <button class="btn" data-bpan="share">共享</button>
+          <button class="btn" data-bpan="more">更多</button>
+          ${!isNew ? '<button class="btn" data-pin="1">置顶</button>' : ''}
+        </div>
+        <div class="tool-pan pan-slot" id="e-bslot" hidden></div>
+      </div>
       <aside class="edit-side" id="e-side">
         <div class="card">
           <div class="row" style="margin-bottom:8px"><b>设置</b></div>
@@ -855,40 +920,14 @@ async function renderEdit(idOrNew, params) {
     mount: document.getElementById('pe-mount'),
     initial: { title: isNew ? '' : (doc.titleCustom ? (doc.title || '') : ''), titleStyle: doc.titleStyle, tasks: doc.tasks },
     paperClass: paperClassOf(doc.templateId),
-    onChange: () => { state.edit.dirty = true; scheduleAutoSave(); },
-    onPanelOpen: (id, slot) => {
-      if (id === 'tpl') {
-        slot.innerHTML = `<div class="pan-lbl">模板（仅名称）</div>
-          <div class="tpl-names">${TODO_TEMPLATES.map((t) => `<button class="chip-btn ${cur.templateId === t.id ? 'on' : ''}" data-tpl="${t.id}">${esc(t.name)}</button>`).join('')}</div>`;
-        slot.onclick = (e) => {
-          const b = e.target.closest('[data-tpl]');
-          if (!b) return;
-          cur.templateId = b.dataset.tpl;
-          editor.setPaperAppearance(paperClassOf(cur.templateId));
-          wrapPageClass();
-          slot.querySelectorAll('[data-tpl]').forEach((x) => x.classList.toggle('on', x === b));
-          state.edit.dirty = true;
-          scheduleAutoSave();
-        };
-      } else if (id === 'share') {
-        slot.innerHTML = `<div class="pan-lbl">共享设置</div>
-          <div class="form-row"><span class="lbl">是否共享</span><div class="switch ${cur.isShared ? 'on' : ''}" id="p-share"></div></div>
-          <div class="form-row"><select id="p-group" ${cur.isShared ? '' : 'disabled'}>
-            <option value="">选择群组…</option>
-            ${state.groups.map((g) => `<option value="${g.id}" ${cur.groupId === g.id ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}
-          </select></div>
-          ${!state.groups.length ? '<div class="t-mut">还没有群组：登录云端后在「群组」页创建即可跨设备共享</div>' : '<div class="t-mut">共享后群组成员可查看并协同编辑任务内容</div>'}`;
-        const sw = slot.querySelector('#p-share');
-        const gp = slot.querySelector('#p-group');
-        sw.onclick = () => { cur.isShared = !cur.isShared; sw.classList.toggle('on', cur.isShared); gp.disabled = !cur.isShared; state.edit.dirty = true; scheduleAutoSave(); };
-        gp.onchange = () => { cur.groupId = gp.value; state.edit.dirty = true; scheduleAutoSave(); };
-      } else if (id === 'more') {
-        renderBulkPanel(slot);
-      }
-    }
+    onChange: () => { state.edit.dirty = true; scheduleAutoSave(); }
   });
   state.edit.editor = editor;
   wrapPageClass();
+  bindBottomActions('e-bottom', 'e-bslot',
+    makePanelOpener(() => state.edit.editor, () => cur, () => { state.edit.dirty = true; scheduleAutoSave(); }));
+  const bpin = document.querySelector('#e-bottom [data-pin]');
+  if (bpin) bpin.onclick = () => { const p = document.getElementById('e-pin'); if (p) p.onclick(); };
 
   // 桌面端把「编辑工具」模块移到右侧栏（移动端保持在纸张下方）
   const toolsEl = document.getElementById('pe-tools');
