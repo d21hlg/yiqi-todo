@@ -707,7 +707,15 @@ export function createPaperEditor(opts) {
     const isH1 = row.textType === 'heading1';
     const isH2 = row.textType === 'heading2';
     const hasCk = row.hasCheckbox !== false;
-    const finish = () => { syncTarget(); emit(); restoreCaret(row.key, 0); };
+    const finish = () => {
+      syncTarget();
+      emit();
+      const el2 = elByKey(row.key);
+      const ae = document.activeElement;
+      // 焦点仍在该行编辑区：光标本就在行首，无需任何 selection/focus 操作 → 键盘零抖动
+      if (el2 && ae && (ae === el2 || (el2.contains && el2.contains(ae)))) return;
+      restoreCaret(row.key, 0);
+    };
     if (isH2 && hasCk) { row.hasCheckbox = false; row.completed = false; rerenderRowChrome(row.key); finish(); toast('已删除圆圈（仍是二级标题）'); return true; }
     if (isH2 && !hasCk) { row.textType = 'heading1'; row.level = 1; row.parentId = ''; row.hasCheckbox = false; row.completed = false; row.countInProgress = false; rerenderRowChrome(row.key); finish(); toast('已变为一级标题'); return true; }
     if (isH1 && hasCk) { row.hasCheckbox = false; row.completed = false; rerenderRowChrome(row.key); finish(); toast('已删除勾选框（仍是一级标题）'); return true; }
@@ -918,6 +926,27 @@ export function createPaperEditor(opts) {
     if (t.closest(KEEP_FOCUS_SEL)) e.preventDefault();
   };
   document.addEventListener('pointerdown', onKeepFocusPD, true);
+  /* v2.6.8：iOS/部分安卓只在 touchstart preventDefault 才能保住 contenteditable 焦点；
+     取消 touchstart 后浏览器不再发 click → 在 touchend 手动补一次合成 click，动作不丢 */
+  let touchCtlTarget = null;
+  const onKeepTouchStart = (e) => {
+    const t = e.target;
+    if (!t || !t.closest) return;
+    if (t.closest('select, input, textarea')) return;
+    if (!t.closest(KEEP_FOCUS_SEL)) return;
+    e.preventDefault();
+    touchCtlTarget = t;
+  };
+  const onKeepTouchEnd = () => {
+    if (!touchCtlTarget) return;
+    const t = touchCtlTarget;
+    touchCtlTarget = null;
+    t.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+  };
+  const onKeepTouchCancel = () => { touchCtlTarget = null; };
+  document.addEventListener('touchstart', onKeepTouchStart, { capture: true, passive: false });
+  document.addEventListener('touchend', onKeepTouchEnd, { capture: true });
+  document.addEventListener('touchcancel', onKeepTouchCancel, { capture: true });
 
   /* ---- v2.4 工具卡自动显隐：点进 task 出现，失焦 180ms 后收起 ---- */
   let hideTimer = 0;
@@ -1018,6 +1047,9 @@ export function createPaperEditor(opts) {
       document.removeEventListener('selectionchange', onSelectionChange);
       document.removeEventListener('pointerdown', onDocPointerDown);
       document.removeEventListener('pointerdown', onKeepFocusPD, true);
+      document.removeEventListener('touchstart', onKeepTouchStart, { capture: true });
+      document.removeEventListener('touchend', onKeepTouchEnd, { capture: true });
+      document.removeEventListener('touchcancel', onKeepTouchCancel, { capture: true });
       mount.innerHTML = '';
     }
   };
