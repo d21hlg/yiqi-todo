@@ -62,7 +62,13 @@ export async function verifyWithCode(email, code) {
     token: String(code || '').trim(),
     type: 'magiclink'
   });
-  if (error) throw new Error('验证码错误或已过期，请重新「发送验证邮件」获取');
+  if (error) {
+    const m = String(error.message || '');
+    if (/otp_expired|invalid/i.test(m)) {
+      throw new Error('验证码已失效：邮件链接被邮件客户端/安全网关「预点开」就会消耗掉验证码。请点「重新发送验证邮件」，这次不要点链接，直接把新邮件里 token= 后的 6 位数字填进来');
+    }
+    throw new Error(m || '验证失败');
+  }
 }
 
 export async function signInWithEmail(email, redirectTo) {

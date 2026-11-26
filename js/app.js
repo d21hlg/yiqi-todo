@@ -1392,7 +1392,17 @@ if (SW_ENABLED && 'serviceWorker' in navigator && location.protocol !== 'file:')
 }
 
 /* v2.2.1：首渲染立即执行、不被 SDK 加载阻塞；登录会话后台恢复，完成后自动整页刷新 */
-loadPrefs().then(() => render());
+loadPrefs().then(() => {
+  const h = location.hash || '';
+  if (h.indexOf('#error=') === 0) {
+    const p = new URLSearchParams(h.slice(7));
+    const desc = p.get('error_description') || p.get('error_code') || '验证失败';
+    console.error('[Auth] redirect error:', h);
+    setTimeout(() => toast('邮箱验证未通过：' + decodeURIComponent(desc.replace(/\+/g, ' ')) + '。请改用「重新发送验证邮件 + 6 位验证码」登录'), 600);
+    history.replaceState(null, '', location.pathname + location.search + '#/mine');
+  }
+  render();
+});
 initAuth(() => { render(); })
   .then(() => { if (supaState().active) render(); })
   .catch(() => { /* SDK 加载失败：保持本地模式，登录按钮会提示重试 */ });
