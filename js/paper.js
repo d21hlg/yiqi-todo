@@ -573,6 +573,21 @@ export function createPaperEditor(opts) {
   }
 
   /* ---------- v2.1 键盘：Enter=下方新建二级；行首 Backspace=删除勾选控件 ---------- */
+  function caretAtEnd(el) {
+    const s2 = window.getSelection();
+    if (!s2 || !s2.rangeCount || !s2.isCollapsed) return false;
+    const r = s2.getRangeAt(0);
+    if (!el.contains(r.startContainer)) return false;
+    let acc = 0;
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    while (walker.nextNode()) {
+      const n = walker.currentNode;
+      if (n === r.startContainer) return acc + r.startOffset === (el.textContent || '').length;
+      acc += n.textContent.length;
+    }
+    return true;
+  }
+
   function caretAtStart(el) {
     const s = window.getSelection();
     if (!s || !s.rangeCount || !s.isCollapsed) return false;
@@ -588,25 +603,30 @@ export function createPaperEditor(opts) {
     return false;
   }
 
+  /* v2.6.2 行首删除键统一规则：标题行按标题语义，普通行按层级语义 */
+  function deleteBackwardAtStart(row, el) {
+    const isH1 = row.textType === 'heading1';
+    const isH2 = row.textType === 'heading2';
+    const hasCk = row.hasCheckbox !== false;
+    const finish = (caret) => { syncTarget(); emit(); if (caret) { const el2 = elByKey(row.key); if (el2) { el2.focus(); setCaret(el2, 0); } } };
+    if (isH2 && hasCk) { row.hasCheckbox = false; row.completed = false; rerenderRow(row.key, 0); finish(false); setCaret(el, 0); toast('已删除圆圈（仍是二级标题）'); return true; }
+    if (isH2 && !hasCk) { row.textType = 'heading1'; row.level = 1; row.parentId = ''; row.hasCheckbox = false; row.completed = false; row.countInProgress = false; renderRows(); finish(true); toast('已变为一级标题'); return true; }
+    if (isH1 && hasCk) { row.hasCheckbox = false; row.completed = false; rerenderRow(row.key, 0); finish(false); setCaret(el, 0); toast('已删除勾选框（仍是一级标题）'); return true; }
+    if (!isH1 && !isH2 && hasCk) {
+      if (row.level === 2) { row.level = 1; row.parentId = ''; renderRows(); finish(true); toast('已提升为一级（方形勾选框）；行首再按删除键去掉勾选框'); }
+      else { row.hasCheckbox = false; row.completed = false; rerenderRow(row.key, 0); finish(false); setCaret(el, 0); toast('已删除勾选框（文字保留）'); }
+      return true;
+    }
+    return false;
+  }
   rowsEl.addEventListener('beforeinput', (e) => {
     if (!e.inputType || e.inputType !== 'deleteContentBackward') return;
     const el = e.target && e.target.closest ? e.target.closest('.task-content') : null;
     if (!el) return;
     const row = rowByKey(el.dataset.key);
-    if (!row || row.hasCheckbox === false) return;
+    if (!row) return;
     if (!caretAtStart(el)) return;
-    e.preventDefault();
-    if (row.level === 2) {
-      row.level = 1; row.parentId = '';
-      renderRows(); syncTarget(); emit();
-      const el2 = elByKey(row.key);
-      if (el2) { el2.focus(); setCaret(el2, 0); }
-      toast('已提升为一级（方形勾选框）；行首再按删除键去掉勾选框');
-    } else {
-      row.hasCheckbox = false; row.completed = false;
-      rerenderRow(row.key, 0); syncTarget(); emit();
-      toast('已删除勾选框（文字保留）');
-    }
+    if (deleteBackwardAtStart(row, el)) e.preventDefault();
   });
 
   rowsEl.addEventListener('keydown', (e) => {
@@ -618,22 +638,32 @@ export function createPaperEditor(opts) {
     if (e.key === 'Enter') {
       e.preventDefault();
       row.segs = parseRowEl(el); // 先固化当前行输入
-      let parentId = '';
-      if (row.level === 2) {
-        parentId = row.parentId || '';
-        if (!parentId) {
-          const idx = rowIdx(key);
-          for (let i = idx - 1; i >= 0; i--) {
-            if ((rows[i].level || 1) === 1) { parentId = rows[i].id; break; }
-          }
-        }
-      } else {
-        parentId = row.id;
-      }
       if (rows.length >= 50) { toast('一张纸最多 50 行'); return; }
-      const nr = newRow(parentId
-        ? { id: uid('t'), hasCheckbox: true, level: 2, parentId }
-        : { id: uid('t'), hasCheckbox: true, level: 1 }, rows.length);
+      const atEnd = caretAtEnd(el);
+      let nr;
+      if (row.textType === 'heading1' && atEnd) {
+        // 一级标题末尾换行 → 新建二级标题
+        nr = newRow({ id: uid('t'), hasCheckbox: row.hasCheckbox !== false, completed: false, level: 2, parentId: row.id, textType: 'heading2', countInProgress: false }, rows.length);
+      } else if (row.textType === 'heading2' && atEnd) {
+        // 二级标题末尾换行 → 再建一个二级标题
+        nr = newRow({ id: uid('t'), hasCheckbox: row.hasCheckbox !== false, completed: false, level: 2, parentId: row.parentId || '', textType: 'heading2', countInProgress: false }, rows.length);
+      } else {
+        let parentId = '';
+        if (row.level === 2) {
+          parentId = row.parentId || '';
+          if (!parentId) {
+            const idx = rowIdx(key);
+            for (let i = idx - 1; i >= 0; i--) {
+              if ((rows[i].level || 1) === 1) { parentId = rows[i].id; break; }
+            }
+          }
+        } else {
+          parentId = row.id;
+        }
+        nr = newRow(parentId
+          ? { id: uid('t'), hasCheckbox: true, level: 2, parentId }
+          : { id: uid('t'), hasCheckbox: true, level: 1 }, rows.length);
+      }
       rows.splice(rowIdx(key) + 1, 0, nr);
       activeRowKey = nr.key;
       sel = null;
@@ -643,27 +673,7 @@ export function createPaperEditor(opts) {
       const nEl = elByKey(nr.key);
       if (nEl) nEl.focus();
     } else if (e.key === 'Backspace') {
-      // 行首 Backspace：二级先升一级（圆圈→方框）；一级删方框；文字与格式始终保留
-      if (row.hasCheckbox !== false && caretAtStart(el)) {
-        e.preventDefault();
-        if (row.level === 2) {
-          row.level = 1;
-          row.parentId = '';
-          renderRows();
-          syncTarget();
-          emit();
-          const el2 = elByKey(key);
-          if (el2) { el2.focus(); setCaret(el2, 0); }
-          toast('已提升为一级（方形勾选框）；再在行首按删除键可去掉勾选框');
-        } else {
-          row.hasCheckbox = false;
-          row.completed = false;
-          rerenderRow(key, 0);
-          syncTarget();
-          emit();
-          toast('已删除勾选框（文字保留、自动前移）');
-        }
-      }
+      if (caretAtStart(el) && deleteBackwardAtStart(row, el)) e.preventDefault();
     } else if (e.key === 'Delete') {
       // 选中行内文字时按 Delete：只删该行的勾选控件，不删文字
       const s2 = window.getSelection();
@@ -795,6 +805,25 @@ export function createPaperEditor(opts) {
       if (t) t.classList.add('is-hidden');
     }, 180);
   }
+  function openTextToolbarForKey(key) {
+    if (!key) return;
+    activeRowKey = key;
+    titleFocused = false;
+    rowsEl.querySelectorAll('.task-row').forEach((tr) => tr.classList.toggle('active', tr.dataset.key === key));
+    placeToolsAfterActive();
+    showTools();
+    syncTarget();
+  }
+  // v2.6.2：pointerdown / touchstart / click / focusin 四通道兜底，确保点文字必弹编辑栏
+  ['pointerdown', 'touchstart', 'click'].forEach((evName) => {
+    mount.addEventListener(evName, (e) => {
+      const t = e.target;
+      if (!t || !t.closest) return;
+      if (t.closest('.pcheck')) return; // 勾选框：只切换完成，不弹栏
+      const content = t.closest('.task-content');
+      if (content && content.dataset.key) openTextToolbarForKey(content.dataset.key);
+    }, { passive: true });
+  });
   mount.addEventListener('focusin', (e) => {
     if (e.target.closest && e.target.closest('#pe-rows, #pe-title, #pe-tools')) {
       showTools();
