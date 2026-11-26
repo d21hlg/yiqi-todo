@@ -60,6 +60,11 @@ export function createPaperEditor(opts) {
       <input class="todo-title-input" id="pe-title" value="${esc(titleVal)}" placeholder="请输入标题" maxlength="80" ${opts.hideTitle ? 'hidden' : ''} />
       <div class="todo-title-divider" ${opts.hideTitle ? 'hidden' : ''}></div>
       <div id="pe-rows"></div>
+      ${readonly ? '' : `<div class="checkbox-control-bar" id="pe-ckbar">
+        <button class="ckbar-btn" data-ckbar="1" title="给当前任务添加/删除一级方形勾选框；未选中任务时新建一级任务">☐ 一级</button>
+        <button class="ckbar-btn" data-ckbar="2" title="给当前任务添加/删除二级圆形勾选框；未选中任务时新建二级任务">○ 二级</button>
+        <span class="t-mut">作用于当前选中的任务行</span>
+      </div>`}
       <div class="paper-add" id="pe-add">＋ 添加任务</div>
     </div>
     <div class="card tools-card is-hidden" id="pe-tools">
@@ -540,6 +545,34 @@ export function createPaperEditor(opts) {
     return r;
   }
   $('#pe-add').addEventListener('click', () => addRowAt());
+  const ckbar = $('#pe-ckbar');
+  if (ckbar) {
+    ckbar.addEventListener('click', (e) => {
+      const b = e.target.closest && e.target.closest('[data-ckbar]');
+      if (!b) return;
+      const level = Number(b.dataset.ckbar);
+      const row = currentRow();
+      if (!row) {
+        // 未选中任务：直接新建对应类型任务并聚焦
+        if (rows.length >= 50) { toast('一张纸最多 50 行'); return; }
+        let parentId = '';
+        if (level === 2) {
+          for (let i = rows.length - 1; i >= 0; i--) { if ((rows[i].level || 1) === 1) { parentId = rows[i].id; break; } }
+        }
+        const nr = newRow({ id: uid('t'), hasCheckbox: true, completed: false, level: level, parentId: parentId, textType: 'normal' }, rows.length);
+        rows.push(nr);
+        renderRows();
+        activeRowKey = nr.key;
+        syncTarget();
+        const el2 = elByKey(nr.key);
+        if (el2) el2.focus();
+        showTools();
+        emit();
+        return;
+      }
+      toggleCheckLevel(level);
+    });
+  }
 
   /* ---------- v2.1 层级：提升为一级 / 降级为二级 ---------- */
   function promoteRow() {
@@ -573,33 +606,34 @@ export function createPaperEditor(opts) {
   }
 
   /* ---------- v2.1 键盘：Enter=下方新建二级；行首 Backspace=删除勾选控件 ---------- */
-  function caretAtEnd(el) {
+  /* v2.6.3 稳定光标判断：字符 offset（兼容 caret 落在元素节点/空行/嵌套 span 的情况） */
+  function caretOffset(el) {
     const s2 = window.getSelection();
-    if (!s2 || !s2.rangeCount || !s2.isCollapsed) return false;
+    if (!s2 || !s2.rangeCount) return -1;
     const r = s2.getRangeAt(0);
-    if (!el.contains(r.startContainer)) return false;
-    let acc = 0;
-    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-    while (walker.nextNode()) {
-      const n = walker.currentNode;
-      if (n === r.startContainer) return acc + r.startOffset === (el.textContent || '').length;
-      acc += n.textContent.length;
-    }
-    return true;
+    if (!r.collapsed) return -1;
+    if (!el.contains(r.startContainer)) return -1;
+    const pre = r.cloneRange();
+    pre.selectNodeContents(el);
+    pre.setEnd(r.startContainer, r.startOffset);
+    return pre.toString().length;
+  }
+  function caretAtEnd(el) {
+    const off = caretOffset(el);
+    return off >= 0 && off === (el.textContent || '').length;
+  }
+  function caretAtStart(el) {
+    return caretOffset(el) === 0;
   }
 
-  function caretAtStart(el) {
-    const s = window.getSelection();
-    if (!s || !s.rangeCount || !s.isCollapsed) return false;
-    const r = s.getRangeAt(0);
-    if (!el.contains(r.startContainer)) return false;
-    let acc = 0;
-    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-    while (walker.nextNode()) {
-      const n = walker.currentNode;
-      if (n === r.startContainer) return acc + r.startOffset === 0;
-      acc += n.textContent.length;
-    }
+  let composing = false; // 中文输入法组合态：期间不响应删除键控控件
+  rowsEl.addEventListener('compositionstart', () => { composing = true; });
+  rowsEl.addEventListener('compositionend', () => { composing = false; });
+  let lastDelLock = null; // keydown 与 beforeinput 双触发 80ms 锁
+  function dupDeleteLocked(key) {
+    const now = Date.now();
+    if (lastDelLock && lastDelLock.key === key && now - lastDelLock.t < 80) return true;
+    lastDelLock = { key: key, t: now };
     return false;
   }
 
@@ -608,25 +642,39 @@ export function createPaperEditor(opts) {
     const isH1 = row.textType === 'heading1';
     const isH2 = row.textType === 'heading2';
     const hasCk = row.hasCheckbox !== false;
-    const finish = (caret) => { syncTarget(); emit(); if (caret) { const el2 = elByKey(row.key); if (el2) { el2.focus(); setCaret(el2, 0); } } };
-    if (isH2 && hasCk) { row.hasCheckbox = false; row.completed = false; rerenderRow(row.key, 0); finish(false); setCaret(el, 0); toast('已删除圆圈（仍是二级标题）'); return true; }
-    if (isH2 && !hasCk) { row.textType = 'heading1'; row.level = 1; row.parentId = ''; row.hasCheckbox = false; row.completed = false; row.countInProgress = false; renderRows(); finish(true); toast('已变为一级标题'); return true; }
-    if (isH1 && hasCk) { row.hasCheckbox = false; row.completed = false; rerenderRow(row.key, 0); finish(false); setCaret(el, 0); toast('已删除勾选框（仍是一级标题）'); return true; }
+    const finish = () => {
+      syncTarget();
+      emit();
+      setTimeout(() => {
+        const el2 = elByKey(row.key);
+        if (el2) { el2.focus(); setCaret(el2, 0); }
+      }, 0);
+    };
+    if (isH2 && hasCk) { row.hasCheckbox = false; row.completed = false; rerenderRow(row.key, 0); finish(); toast('已删除圆圈（仍是二级标题）'); return true; }
+    if (isH2 && !hasCk) { row.textType = 'heading1'; row.level = 1; row.parentId = ''; row.hasCheckbox = false; row.completed = false; row.countInProgress = false; renderRows(); finish(); toast('已变为一级标题'); return true; }
+    if (isH1 && hasCk) { row.hasCheckbox = false; row.completed = false; rerenderRow(row.key, 0); finish(); toast('已删除勾选框（仍是一级标题）'); return true; }
     if (!isH1 && !isH2 && hasCk) {
-      if (row.level === 2) { row.level = 1; row.parentId = ''; renderRows(); finish(true); toast('已提升为一级（方形勾选框）；行首再按删除键去掉勾选框'); }
-      else { row.hasCheckbox = false; row.completed = false; rerenderRow(row.key, 0); finish(false); setCaret(el, 0); toast('已删除勾选框（文字保留）'); }
+      if (row.level === 2) { row.level = 1; row.parentId = ''; renderRows(); finish(); toast('已提升为一级（方形勾选框）；行首再按删除键去掉勾选框'); }
+      else { row.hasCheckbox = false; row.completed = false; rerenderRow(row.key, 0); finish(); toast('已删除勾选框（文字保留）'); }
       return true;
     }
     return false;
+  }
+  function handleDeleteBackward(el, source) {
+    const row = rowByKey(el.dataset.key);
+    if (!row) return false;
+    if (composing) return false; // 输入法组合中不误触
+    const off = caretOffset(el);
+    if (off !== 0) return false;
+    console.log('[TaskDeleteBackward]', source, row.key, 'textType:', row.textType, 'level:', row.level, 'hasCheckbox:', row.hasCheckbox);
+    if (dupDeleteLocked(row.key)) return true; // 另一通道 80ms 内已处理
+    return deleteBackwardAtStart(row, el);
   }
   rowsEl.addEventListener('beforeinput', (e) => {
     if (!e.inputType || e.inputType !== 'deleteContentBackward') return;
     const el = e.target && e.target.closest ? e.target.closest('.task-content') : null;
     if (!el) return;
-    const row = rowByKey(el.dataset.key);
-    if (!row) return;
-    if (!caretAtStart(el)) return;
-    if (deleteBackwardAtStart(row, el)) e.preventDefault();
+    if (handleDeleteBackward(el, 'beforeinput')) e.preventDefault();
   });
 
   rowsEl.addEventListener('keydown', (e) => {
@@ -673,7 +721,7 @@ export function createPaperEditor(opts) {
       const nEl = elByKey(nr.key);
       if (nEl) nEl.focus();
     } else if (e.key === 'Backspace') {
-      if (caretAtStart(el) && deleteBackwardAtStart(row, el)) e.preventDefault();
+      if (handleDeleteBackward(el, 'keydown')) e.preventDefault();
     } else if (e.key === 'Delete') {
       // 选中行内文字时按 Delete：只删该行的勾选控件，不删文字
       const s2 = window.getSelection();

@@ -364,3 +364,11 @@ body.no-tab #view { padding-bottom: 130px; }
 .task-content.heading-1 { font-size: 22px; font-weight: 700; line-height: 1.5; }
 .task-content.heading-2 { font-size: 18px; font-weight: 600; line-height: 1.5; }
 .tool-btn.l1.ckbtn { border-style: dashed; }
+
+/* v2.6.3 勾选框控制区（列表与添加任务之间） */
+.checkbox-control-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 12px 0 8px; padding: 8px 0; }
+.checkbox-control-bar .ckbar-btn {
+  min-height: 34px; padding: 6px 14px; border-radius: 10px;
+  border: 1px solid rgba(0, 0, 0, 0.12); background: rgba(255, 255, 255, 0.95);
+  font-size: 14px; touch-action: manipulation; color: #445; cursor: pointer;
+}
