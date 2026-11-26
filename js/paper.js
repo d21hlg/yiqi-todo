@@ -126,9 +126,7 @@ export function createPaperEditor(opts) {
   function renderRows() {
     rowsEl.innerHTML = rows.map((r) => {
       const done = r.hasCheckbox && r.completed;
-      const check = r.hasCheckbox
-        ? `<span class="pcheck ${r.level === 2 ? 'circle' : ''} ${done ? 'on' : ''}" data-act="check" data-key="${r.key}" aria-label="${done ? '取消完成' : '标记完成'}"></span>`
-        : '';
+      const check = `<span class="pcheck ${r.level === 2 ? 'circle' : ''} ${done ? 'on' : ''} ${r.hasCheckbox === false ? 'pcheck-hidden' : ''}" data-act="check" data-key="${r.key}" aria-label="${done ? '取消完成' : '标记完成'}"></span>`;
       return `<div class="task-row ${r.level === 2 ? 'level-2' : 'level-1'} ${r.hasCheckbox === false ? 'no-ctrl' : ''} ${activeRowKey === r.key ? 'active' : ''}" data-key="${r.key}">
         ${check}
         <div class="task-content ${done ? 'done' : ''} ${r.textType === 'heading1' ? 'heading-1' : r.textType === 'heading2' ? 'heading-2' : ''}" contenteditable="${readonly ? 'false' : 'true'}" spellcheck="false"
@@ -244,7 +242,7 @@ export function createPaperEditor(opts) {
     const rowEl = el.parentNode;
     const old = rowEl.querySelector('.pcheck, .pcheck-ghost');
     if (row.hasCheckbox === false) {
-      if (old) old.remove();
+      if (old) old.classList.add('pcheck-hidden');
       rowEl.classList.add('no-ctrl');
     } else {
       rowEl.classList.remove('no-ctrl');
@@ -273,7 +271,7 @@ export function createPaperEditor(opts) {
     const rowEl = el.parentNode;
     const old = rowEl.querySelector('.pcheck, .pcheck-ghost');
     if (row.hasCheckbox === false) {
-      if (old) old.remove();
+      if (old) old.classList.add('pcheck-hidden'); // v2.6.7：不 remove 节点，避免移动端 blur
       rowEl.classList.add('no-ctrl');
     } else {
       rowEl.classList.remove('no-ctrl');
