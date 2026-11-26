@@ -9,10 +9,10 @@ import {
 } from './util.js';
 import { TodoRepository, GroupRepository, getLocalUser, saveLocalUser, newTodoDoc, exportAll, importAll, uploadLocalToCloud } from './db.js';
 import { USE_SUPABASE } from './config.js';
-import { initAuth, supaState, signInWithEmail, signOutCloud, verifyWithCode, signInWithPasswordOrSignup } from './supabase-db.js';
+import { initAuth, supaState, signInWithEmail, signOutCloud, verifyWithCode, signInWithPasswordOrSignup, CloudTodoRepository, CloudGroupRepository } from './supabase-db.js';
 import { createPaperEditor } from './paper.js';
 import { getTodoProgress, weekUnfinishedDates, fmtShortDate, sortTopicTodos, THEMES, THEME_BGS, datesForRule, hasTaskFromRule, defaultCalendar, isChinaLegalHoliday, safeTasksArray } from './util.js';
-import { getMeta, setMeta, localSnapshot } from './db.js';
+import { getMeta, setMeta, localSnapshot, getTombstones, localPutTodo, localDelTodo } from './db.js';
 
 const view = document.getElementById('view');
 const tabbar = document.getElementById('tabbar');
@@ -87,31 +87,72 @@ function sanitizeTodos(list) {
 }
 
 async function reloadAll() {
+  // v2.5 本地优先：永远先读本机（无网络依赖、秒开）；云端由后台同步引擎合并
+  const snap = await localSnapshot();
+  state.todos = sanitizeTodos(snap.todos);
+  state.groups = Array.isArray(snap.groups) ? snap.groups : [];
+  state.user = snap.user;
+}
+
+/* ================= v2.5 后台云同步引擎（静默、可达才写、LWW 合并） ================= */
+let syncRunning = false;
+let syncBadgeEl = null;
+let lastSyncAt = 0;
+function setBadge(mode) {
+  if (!syncBadgeEl) {
+    syncBadgeEl = document.createElement('div');
+    syncBadgeEl.id = 'sync-badge';
+    syncBadgeEl.onclick = () => { toast('正在尝试连接云端…'); tryCloudSync(); };
+    document.body.appendChild(syncBadgeEl);
+  }
+  if (!USE_SUPABASE || !supaState().active) { syncBadgeEl.style.display = 'none'; return; }
+  syncBadgeEl.style.display = '';
+  if (mode === 'ok') syncBadgeEl.textContent = '☁ 已同步';
+  else if (mode === 'sync') syncBadgeEl.textContent = '☁ 同步中…';
+  else syncBadgeEl.textContent = '⚠ 单机模式 · 点我重试';
+}
+async function tryCloudSync() {
+  if (!USE_SUPABASE || !supaState().active) { setBadge('off'); return; }
+  if (syncRunning) return;
+  syncRunning = true;
+  setBadge('sync');
   try {
-    // v2.4.6：云端请求 8 秒超时即回退本机，避免国内网络到 Supabase 慢/不通时卡加载
-    const cloudWork = Promise.all([
-      TodoRepository.getTodos(), GroupRepository.getGroups(), getLocalUser()
-    ]);
-    const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('cloud timeout 8s')), 8000));
-    const [todos, groups, user] = await Promise.race([cloudWork, timeout]);
-    state.todos = sanitizeTodos(todos);
-    state.groups = Array.isArray(groups) ? groups : [];
-    state.user = user;
+    const cloudTodos = await CloudTodoRepository.getTodos(); // 能走到这里=云端可达
+    const local = sanitizeTodos((await localSnapshot()).todos);
+    const tombs = await getTombstones();
+    for (const tb of tombs) { await CloudTodoRepository.deleteTodo(tb.id).catch(() => {}); }
+    for (const lt of local) {
+      const ct = cloudTodos.find((c) => c.id === lt.id);
+      if (!ct) await CloudTodoRepository.createTodo(lt);
+      else if ((lt.updateTime || 0) > (ct.updateTime || 0)) await CloudTodoRepository.updateTodo(lt);
+    }
+    const fresh = sanitizeTodos(await CloudTodoRepository.getTodos());
+    const freshIds = {};
+    fresh.forEach((t) => { freshIds[t.id] = 1; });
+    // 其他设备删除的（且本机自上次同步后没碰过）→ 本地也删
+    const prevSync = lastSyncAt;
+    for (const lt of local) {
+      if (!freshIds[lt.id] && (lt.updateTime || 0) <= prevSync) await localDelTodo(lt.id);
+    }
+    for (const t of fresh) await localPutTodo(t);
+    state.todos = fresh;
+    try { state.groups = await CloudGroupRepository.getMyGroups(); } catch (e) { /* 群组保留本地 */ }
+    lastSyncAt = Date.now();
+    window.__cloudOk = true;
+    setBadge('ok');
+    console.log('[Sync] cloud ok, todos:', fresh.length);
   } catch (e) {
-    console.error('[reloadAll] cloud failed, fallback local:', e);
-    const snap = await localSnapshot();
-    state.todos = sanitizeTodos(snap.todos);
-    state.groups = Array.isArray(snap.groups) ? snap.groups : [];
-    state.user = snap.user;
-    // 同一次会话只提示一次，避免每次开页都弹
-    try {
-      if (!sessionStorage.getItem('netwarn')) {
-        sessionStorage.setItem('netwarn', '1');
-        toast('云端暂连不上：已显示本机数据（数据不丢），网络恢复后自动同步');
-      }
-    } catch (e2) { /* sessionStorage 不可用则不提示 */ }
+    window.__cloudOk = false;
+    setBadge('local');
+    console.warn('[Sync] cloud unreachable:', e && e.message);
+  } finally {
+    syncRunning = false;
   }
 }
+function queueSync() { setTimeout(() => tryCloudSync(), 300); }
+setInterval(() => tryCloudSync(), 45000);
+window.addEventListener('online', () => queueSync());
+document.addEventListener('visibilitychange', () => { if (!document.hidden) queueSync(); });
 
 /* ================= 路由 ================= */
 function parseHash() {
@@ -150,6 +191,7 @@ async function render() {
     else renderDaily();
   }
   window.__booted = true;
+  if (USE_SUPABASE && supaState().active && window.__cloudOk !== true) queueSync();
   } catch (err) {
     console.error('[DailyPage] load failed:', err);
     window.__booted = true; // 错误边界也算启动成功（有可见反馈）
@@ -1318,8 +1360,8 @@ function renderMine() {
   const mUpBtn = document.getElementById('m-upcloud');
   if (mUpBtn) mUpBtn.onclick = async () => {
     mUpBtn.disabled = true;
-    try { const n = await uploadLocalToCloud(); toast('已上传 ' + n + ' 条 To Do 到云端'); render(); }
-    catch (e) { toast('上传失败：' + (e.message || e)); mUpBtn.disabled = false; }
+    try { await tryCloudSync(); toast(window.__cloudOk ? '已同步到云端' : '云端暂连不上，稍后自动重试'); render(); }
+    catch (e) { toast('同步失败：' + (e.message || e)); mUpBtn.disabled = false; }
   };
   view.querySelectorAll('[data-theme-id]').forEach((b) => {
     b.onclick = () => {
@@ -1411,6 +1453,6 @@ loadPrefs().then(() => {
   }
   render();
 });
-initAuth(() => { render(); })
+initAuth(() => { setBadge('sync'); queueSync(); render(); })
   .then(() => { if (supaState().active) render(); })
   .catch(() => { /* SDK 加载失败：保持本地模式，登录按钮会提示重试 */ });

@@ -10,9 +10,20 @@ import { USE_SUPABASE } from './config.js';
 import { supaState, getCloudUser, saveCloudUser, CloudTodoRepository, CloudGroupRepository } from './supabase-db.js';
 
 /* 在线走云端、离线回本机（离线期间的改动回到在线后可用「上传本机数据到云端」补传；自动队列在 P3） */
-function useCloud() {
-  return !!(USE_SUPABASE && supaState().active && (typeof navigator === 'undefined' || navigator.onLine !== false));
+/* v2.5 本地优先：读取永远走本机（秒开、无网络依赖）；
+   云端在后台同步引擎确认可达（window.__cloudOk）后进行双写与合并。 */
+function cloudOn() {
+  return window.__cloudOk === true;
 }
+function cloudSafe(fn) {
+  if (!cloudOn()) return Promise.resolve();
+  return fn().catch((e) => {
+    console.warn('[cloud] 写失败，保留本机副本：', e && e.message);
+    window.__cloudOk = false;
+    return null;
+  });
+}
+function useCloud() { return cloudOn(); }
 
 const DB_NAME = 'yiqi-todo-web';
 const DB_VER = 1;
@@ -89,12 +100,6 @@ const del = (store, key) => tx(store, 'readwrite', (s) => s.delete(key));
 
 /* ---------- Web 端本地用户（无登录系统时字段保留，接后端后可替换） ---------- */
 export async function getLocalUser() {
-  if (useCloud()) {
-    try {
-      const cu = await getCloudUser();
-      if (cu) { await put('meta', { key: 'user', value: cu }); return cu; }
-    } catch (e) { console.warn('[db] getCloudUser fallback to local', e); }
-  }
   const m = await getOne('meta', 'user');
   if (m && m.value) return m.value;
   const user = {
@@ -107,7 +112,7 @@ export async function getLocalUser() {
 }
 export async function saveLocalUser(user) {
   await put('meta', { key: 'user', value: user });
-  if (useCloud()) { try { await saveCloudUser(user); } catch (e) { console.warn('[db] saveCloudUser failed', e); } }
+  return cloudSafe(() => saveCloudUser(user));
 }
 
 /* ---------- 新建 Todo 的默认结构（与小程序端 doCreate 对齐） ---------- */
@@ -137,22 +142,37 @@ export function newTodoDoc(partial, user) {
   }, partial);
 }
 
+/* 删除墓碑：离线删除也要在联网后同步到云端（保留 7 天） */
+export async function addTombstone(id) {
+  const m = await getOne('meta', 'tomb');
+  const list = (m && m.value) || [];
+  list.push({ id: id, ts: Date.now() });
+  const cut = Date.now() - 7 * 86400000;
+  return put('meta', { key: 'tomb', value: list.filter((x) => x.ts > cut) });
+}
+export async function getTombstones() {
+  const m = await getOne('meta', 'tomb');
+  return (m && m.value) || [];
+}
+
 export const TodoRepository = {
-  getTodos: () => (useCloud() ? CloudTodoRepository.getTodos() : getAll('todos')),
-  getTodoById: (id) => (useCloud() ? CloudTodoRepository.getTodoById(id) : getOne('todos', id).then((v) => v || null)),
-  createTodo: (todo) => (useCloud() ? CloudTodoRepository.createTodo(todo) : put('todos', todo)),
-  updateTodo: (todo) => (useCloud() ? CloudTodoRepository.updateTodo(todo) : put('todos', todo)),
-  deleteTodo: (id) => (useCloud() ? CloudTodoRepository.deleteTodo(id) : del('todos', id))
+  getTodos: () => getAll('todos'),
+  getTodoById: (id) => getOne('todos', id).then((v) => v || null),
+  createTodo: (todo) => put('todos', todo).then(() => cloudSafe(() => CloudTodoRepository.createTodo(todo))),
+  updateTodo: (todo) => put('todos', todo).then(() => cloudSafe(() => CloudTodoRepository.updateTodo(todo))),
+  deleteTodo: (id) => addTombstone(id)
+    .then(() => del('todos', id))
+    .then(() => cloudSafe(() => CloudTodoRepository.deleteTodo(id)))
 };
 
 /* ---------- 本机数据一键上云（首次登录迁移 / 离线改动补传） ---------- */
 export async function uploadLocalToCloud() {
-  if (!useCloud()) throw new Error('云端未启用或未登录');
+  if (!supaState().active) throw new Error('云端未启用或未登录');
   const todos = await getAll('todos');
   const n = await CloudTodoRepository.upsertMany(todos);
   return n;
 }
-export { getAll as localGetAllTodos, del as localDelTodo };
+export { getAll as localGetAllTodos, del as localDelTodo, put as localPutTodo };
 
 /* ---------- 本地快照（云端不可用时兜底，保证页面一定能开） ---------- */
 export async function localSnapshot() {
@@ -170,15 +190,18 @@ export function setMeta(key, value) {
 
 /* ---------- 群组：登录云端走 Supabase（跨设备），否则本机演示 ---------- */
 export const GroupRepository = {
-  getGroups: () => (useCloud() ? CloudGroupRepository.getMyGroups() : getAll('groups')),
-  getGroupById: (id) => (useCloud() ? CloudGroupRepository.getGroupById(id) : getOne('groups', id).then((v) => v || null)),
-  createGroup: (g) => (useCloud() ? CloudGroupRepository.createGroup(g) : put('groups', g)),
-  deleteGroup: (id) => (useCloud() ? CloudGroupRepository.deleteGroup(id) : del('groups', id)),
-  findByCode: (code) => (useCloud()
+  getGroups: () => getAll('groups'),
+  getGroupById: (id) => getOne('groups', id).then((v) => v || null),
+  createGroup: (g) => put('groups', g).then(() => cloudSafe(() => CloudGroupRepository.createGroup(g))),
+  deleteGroup: (id) => del('groups', id).then(() => cloudSafe(() => CloudGroupRepository.deleteGroup(id))),
+  findByCode: (code) => (cloudOn()
     ? CloudGroupRepository.findByCode(code)
     : getAll('groups').then((all) => all.find((g) => g.inviteCode === String(code || '').trim().toUpperCase()) || null)),
   joinByCode: async (code) => {
-    if (useCloud()) return CloudGroupRepository.joinByCode(code);
+    if (cloudOn()) return CloudGroupRepository.joinByCode(code).then((msg) => {
+      // 加入成功后把群信息落到本机，离线也可见
+      return CloudGroupRepository.findByCode(code).then((g) => { if (g) return put('groups', g).then(() => msg); return msg; });
+    });
     const all = await getAll('groups');
     const g = all.find((x) => x.inviteCode === String(code || '').trim().toUpperCase());
     if (!g) throw new Error('群组不存在：未登录云端时邀请码仅同机同浏览器有效；跨设备请先登录云端或在小程序端加入');

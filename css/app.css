@@ -352,3 +352,10 @@ body.no-tab #view { padding-bottom: 130px; }
 /* v2.4.1 编辑栏关闭按钮 */
 .tool-close { margin-left: auto; width: 28px; height: 28px; line-height: 26px; text-align: center; border-radius: 999px; border: 1px solid var(--line); color: var(--text-2); font-size: 16px; cursor: pointer; background: #fff; }
 .tools-head { display: flex; align-items: center; gap: 8px; }
+
+/* v2.5 云同步状态徽章 */
+#sync-badge {
+  position: fixed; top: 54px; right: 10px; z-index: 60;
+  font-size: 11px; padding: 3px 10px; border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55); color: #fff; cursor: pointer;
+}
