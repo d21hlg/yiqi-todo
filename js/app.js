@@ -88,20 +88,28 @@ function sanitizeTodos(list) {
 
 async function reloadAll() {
   try {
-    const [todos, groups, user] = await Promise.all([
+    // v2.4.6：云端请求 8 秒超时即回退本机，避免国内网络到 Supabase 慢/不通时卡加载
+    const cloudWork = Promise.all([
       TodoRepository.getTodos(), GroupRepository.getGroups(), getLocalUser()
     ]);
+    const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('cloud timeout 8s')), 8000));
+    const [todos, groups, user] = await Promise.race([cloudWork, timeout]);
     state.todos = sanitizeTodos(todos);
     state.groups = Array.isArray(groups) ? groups : [];
     state.user = user;
   } catch (e) {
-    // 云端超时/断网：回退本机快照，保证页面一定能打开（hotfix）
     console.error('[reloadAll] cloud failed, fallback local:', e);
     const snap = await localSnapshot();
     state.todos = sanitizeTodos(snap.todos);
     state.groups = Array.isArray(snap.groups) ? snap.groups : [];
     state.user = snap.user;
-    toast('网络异常：已显示本机数据，联网后自动恢复云端');
+    // 同一次会话只提示一次，避免每次开页都弹
+    try {
+      if (!sessionStorage.getItem('netwarn')) {
+        sessionStorage.setItem('netwarn', '1');
+        toast('云端暂连不上：已显示本机数据（数据不丢），网络恢复后自动同步');
+      }
+    } catch (e2) { /* sessionStorage 不可用则不提示 */ }
   }
 }
 
