@@ -40,6 +40,7 @@ function applyTheme() {
   document.documentElement.setAttribute('data-bg', t.bgId || 'none');
 }
 async function loadPrefs() {
+  try {
   const [pref, theme, rules, cal] = await Promise.all([
     getMeta('viewPref', null), getMeta('theme', null), getMeta('bulkRules', null), getMeta('workdayCal', null)
   ]);
@@ -48,7 +49,14 @@ async function loadPrefs() {
   if (rules) state.bulkRules = rules;
   state.workdayCal = cal || defaultCalendar(new Date().getFullYear());
   state.daily.viewMode = state.pref.dailyMode === 'compact' ? 'compact' : 'tasks';
+  state.daily.date = state.daily.date || todayStr();
   applyTheme();
+  } catch (e) {
+    console.error('[Prefs] load failed:', e);
+    state.daily.viewMode = 'tasks';
+    state.daily.date = state.daily.date || todayStr();
+    applyTheme();
+  }
 }
 
 function toast(msg) {
@@ -95,12 +103,23 @@ async function render() {
     a.classList.toggle('active', a.dataset.tab === route);
   });
 
-  if (route === 'daily') renderDaily();
-  else if (route === 'cate') renderCate();
-  else if (route === 'groups') renderGroups();
-  else if (route === 'mine') renderMine();
-  else if (route === 'edit') await renderEdit(parts[1], params);
-  else renderDaily();
+  try {
+    if (route === 'daily') renderDaily();
+    else if (route === 'cate') renderCate();
+    else if (route === 'groups') renderGroups();
+    else if (route === 'mine') renderMine();
+    else if (route === 'edit') await renderEdit(parts[1], params);
+    else renderDaily();
+  } catch (err) {
+    console.error('[DailyPage] load failed:', err);
+    view.innerHTML = `<div class="card empty">
+      <div>页面加载失败</div>
+      <div class="t-mut" style="margin:8px 0">${esc(String((err && err.message) || err))}</div>
+      <button class="btn primary" id="r-retry">重试</button>
+    </div>`;
+    const rb = document.getElementById('r-retry');
+    if (rb) rb.onclick = () => render();
+  }
 
   window.scrollTo(0, 0);
 }
@@ -266,7 +285,8 @@ function updateProgressDom(prefix, tasks) {
 }
 
 function renderDaily() {
-  const d = state.daily.date;
+  const d = state.daily.date || todayStr();
+  state.daily.date = d;
   const info = dayInfo(d);
   const isToday = d === todayStr();
   document.body.classList.remove('editing');
@@ -288,6 +308,7 @@ function renderDaily() {
   }).sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
   const stat = dayTodo ? getTodoProgress(dayTodo) : null;
   const week = weekUnfinishedDates(state.todos, todayStr());
+  console.log('[DailyPage] selectedDate:', d, 'viewMode:', state.daily.viewMode, 'dailyTodo:', dayTodo ? dayTodo.id : null);
 
   const head = `
     <div class="date-head">
@@ -301,6 +322,7 @@ function renderDaily() {
       ${isToday ? '' : '<button class="arrow-btn" id="d-today">回到今天</button>'}
       <div class="spacer"></div>
       <button class="btn" id="d-mode">${state.daily.viewMode === 'tasks' ? '切换为缩小版' : '切换为展开视图'}</button>
+      ${state.daily.viewMode === 'tasks' ? '<button class="btn primary" id="d-add">＋ 添加任务</button>' : ''}
     </div>`;
   const weekRow = week.length ? `
     <div class="card week-chips">
@@ -360,12 +382,27 @@ function renderDaily() {
   const addBtn = document.getElementById('d-add-first');
   if (addBtn) {
     addBtn.onclick = async () => {
-      const doc = await createDailyDoc(); // 懒创建当天唯一一篇
-      if (doc && doc.id) location.hash = '#/edit/' + doc.id; // 首页只读 → 跳转编辑
-      else renderDaily();
+      console.log('[AddTask] clicked (empty state), selectedDate:', d);
+      try {
+        const doc = await createDailyDoc(); // 当天没有 → 创建唯一一篇
+        renderDaily();                       // 立即内联显示，无需刷新/跳转
+        const el = document.querySelector('#daily-mount .task-content');
+        if (el) el.focus();                  // 新行自动聚焦
+      } catch (e) {
+        console.error('[AddTask] create failed:', e);
+        toast('创建失败：' + ((e && e.message) || e));
+      }
     };
     destroyDailyEditor();
     return;
+  }
+  const headAdd = document.getElementById('d-add');
+  if (headAdd) {
+    headAdd.onclick = () => {
+      console.log('[AddTask] clicked (head), selectedDate:', d);
+      if (state.daily.editor && state.daily.editor.addRow) state.daily.editor.addRow();
+      else toast('编辑器未就绪，请重试');
+    };
   }
 
   if (state.daily.editor && dailySave && dailySave.doc && dailySave.doc.id === dayTodo.id) return;
@@ -373,10 +410,11 @@ function renderDaily() {
   state.daily.editor = createPaperEditor({
     mount: document.getElementById('daily-mount'),
     hideTitle: true,
-    editable: false, // v2.3：首页预览只读（勾选除外），编辑栏不出现
+    editable: true, // v2.3.2 hotfix：放大版=可编辑+一级编辑栏可点开（上轮只读化是回归根因）
     paperClass: '', // 模板样式由整页容器 .todo-page 承载，避免双层背景
     initial: { title: '', titleStyle: null, tasks: dayTodo.tasks || [] },
-    onChange: (payload) => { updateProgressDom('d', payload.tasks); scheduleDailySave(); }
+    onChange: (payload) => { updateProgressDom('d', payload.tasks); scheduleDailySave(); },
+    onPanelOpen: makePanelOpener(() => state.daily.editor, () => (dailySave && dailySave.doc) || dayTodo, () => scheduleDailySave())
   });
   dailySave = { timer: 0, dirty: false, doc: dayTodo, editor: state.daily.editor };
   window.__flushDailySave = flushDailySave;
@@ -557,10 +595,11 @@ function renderCate() {
     const editor = createPaperEditor({
       mount: document.getElementById('cate-mount'),
       hideTitle: true,
-      editable: false,
+      editable: true,
       paperClass: '',
       initial: { title: '', titleStyle: null, tasks: doc.tasks || [] },
-      onChange: (payload) => { updateProgressDom('c', payload.tasks); scheduleCateSave(); }
+      onChange: (payload) => { updateProgressDom('c', payload.tasks); scheduleCateSave(); },
+      onPanelOpen: makePanelOpener(() => state.cate.editor, () => (cateSave && cateSave.doc) || doc, () => scheduleCateSave())
     });
     cateSave = { timer: 0, dirty: false, doc, editor };
     state.cate.doc = doc;
@@ -589,6 +628,45 @@ function renderCate() {
   };
   document.getElementById('f-new').onclick = () => { location.hash = '#/edit/new?module=categorized'; };
   updateList();
+}
+
+/* ---------- v2.3.2 共享面板生成器：今日/专题放大版的编辑工具面板 ---------- */
+function makePanelOpener(getEditor, getDoc, afterChange) {
+  return (id, slot) => {
+    const editor = getEditor();
+    const doc = getDoc();
+    if (!doc || !editor) return;
+    if (id === 'tpl') {
+      slot.innerHTML = `<div class="pan-lbl">模板（仅名称）</div>
+        <div class="tpl-names">${TODO_TEMPLATES.map((t) => `<button class="chip-btn ${doc.templateId === t.id ? 'on' : ''}" data-tpl="${t.id}">${esc(t.name)}</button>`).join('')}</div>`;
+      slot.onclick = (e) => {
+        const b = e.target.closest('[data-tpl]');
+        if (!b) return;
+        doc.templateId = b.dataset.tpl;
+        editor.setPaperAppearance(paperClassOf(doc.templateId));
+        const pg = slot.closest('.todo-page');
+        if (pg) {
+          pg.className = pg.className.split(/\s+/).filter((c) => !/^tpl-/.test(c) && !/^ps-/.test(c)).join(' ') + ' ' + paperClassOf(doc.templateId);
+        }
+        slot.querySelectorAll('[data-tpl]').forEach((x) => x.classList.toggle('on', x === b));
+        afterChange();
+      };
+    } else if (id === 'share') {
+      slot.innerHTML = `<div class="pan-lbl">共享设置</div>
+        <div class="form-row"><span class="lbl">是否共享</span><div class="switch ${doc.isShared ? 'on' : ''}" id="p-share"></div></div>
+        <div class="form-row"><select id="p-group" ${doc.isShared ? '' : 'disabled'}>
+          <option value="">选择群组…</option>
+          ${state.groups.map((g) => `<option value="${g.id}" ${doc.groupId === g.id ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}
+        </select></div>
+        ${!state.groups.length ? '<div class="t-mut">还没有群组：登录云端后在「群组」页创建</div>' : ''}`;
+      const sw = slot.querySelector('#p-share');
+      const gp = slot.querySelector('#p-group');
+      sw.onclick = () => { doc.isShared = !doc.isShared; sw.classList.toggle('on', doc.isShared); gp.disabled = !doc.isShared; afterChange(); };
+      gp.onchange = () => { doc.groupId = gp.value; afterChange(); };
+    } else if (id === 'more') {
+      renderBulkPanel(slot);
+    }
+  };
 }
 
 /* ================= 批量添加（规则 → 每日 Todo） ================= */
@@ -1038,7 +1116,9 @@ function renderMine() {
       <div class="t-mut" style="line-height:1.8">输入邮箱 → 点「发送验证邮件」→ 两种方式任选其一完成登录（无密码）：① 点击邮件里的登录链接；② 链接打不开时（国内网络常见），把邮件里的 <b>6 位验证码</b> 填到下面登录。登录后 To Do 存云端，可在多台设备同步；首次登录后建议点「上传本机数据到云端」完成迁移。</div>
       <div class="form-row"><input class="cat-input" id="m-email" type="email" placeholder="you@example.com" /></div>
       <div class="form-row"><button class="btn primary" id="m-login">发送验证邮件</button></div>
-      <div class="form-row"><input class="cat-input" id="m-code" placeholder="邮件里的 6 位验证码" maxlength="6" inputmode="numeric" style="flex:1" /><button class="btn ghost" id="m-verify">验证码登录</button></div>
+      <div class="form-row"><input class="cat-input" id="m-code" placeholder="邮件里的 6 位验证码" maxlength="6" inputmode="numeric" style="flex:1" /><button class="btn ghost" id="m-verify">验证码登录/验证</button></div>
+      <div class="form-row"><button class="btn ghost" id="m-resend">重新发送验证邮件</button></div>
+      <div class="t-mut">链接在国内打不开时：在邮件里长按/右键复制那条链接，取其中 <b>token=</b> 后面的 6 位数字填入验证码框；或点「重新发送验证邮件」获取新验证码（旧验证码自动失效）。</div>
       <div class="row" style="margin-top:6px"><b style="font-size:12px">推荐：密码登录 / 注册（不走邮件，国内网络最稳）</b></div>
       <div class="form-row"><input class="cat-input" id="m-pass" type="password" placeholder="设置密码（≥6 位，注册与登录同密码）" style="flex:1" /><button class="btn primary" id="m-pw">密码登录/注册</button></div>
       <div class="t-mut">已有账号=直接登录；没注册过=自动注册并登录（已开自动确认，无需点邮件）。</div>`}
@@ -1102,6 +1182,14 @@ function renderMine() {
     catch (e) { toast('发送失败：' + (e.message || e)); }
     mLoginBtn.disabled = false;
   };
+  const mResendBtn = document.getElementById('m-resend');
+  if (mResendBtn) mResendBtn.onclick = async () => {
+    const email = (document.getElementById('m-email').value || '').trim();
+    if (!email || !email.includes('@')) { toast('请先填写邮箱地址'); return; }
+    console.log('[Auth] resend verification email:', email);
+    try { await signInWithEmail(email); toast('已重新发送：取邮件链接中 token= 后的 6 位数字即可验证'); }
+    catch (e) { toast('发送失败：' + (e.message || e)); }
+  };
   const mVerifyBtn = document.getElementById('m-verify');
   if (mVerifyBtn) mVerifyBtn.onclick = async () => {
     const email = (document.getElementById('m-email').value || '').trim();
@@ -1111,7 +1199,10 @@ function renderMine() {
     try {
       await verifyWithCode(email, code);
       toast('登录成功，正在切换云端数据…');
-    } catch (e) { toast(e.message || '验证失败，请重发验证码'); }
+    } catch (e) {
+      console.error('[Auth] verify failed:', e);
+      toast(e.message || '验证失败，请重发验证码');
+    }
     mVerifyBtn.disabled = false;
   };
   const mPwBtn = document.getElementById('m-pw');
@@ -1125,7 +1216,14 @@ function renderMine() {
     try {
       await signInWithPasswordOrSignup(email, pw);
       toast('登录成功，正在切换云端数据…');
-    } catch (e) { toast(e.message || '登录失败'); }
+    } catch (e) {
+      const msg = e.message || '登录失败';
+      toast(msg);
+      if (/注册|验证/.test(msg)) {
+        const codeEl = document.getElementById('m-code');
+        if (codeEl) codeEl.focus();
+      }
+    }
     mPwBtn.disabled = false;
     mPwBtn.textContent = '密码登录/注册';
   };

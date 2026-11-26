@@ -522,8 +522,8 @@ export function createPaperEditor(opts) {
     }
   });
 
-  $('#pe-add').addEventListener('click', () => {
-    if (rows.length >= 50) { toast('一张纸最多 50 行'); return; }
+  function addRowAt() {
+    if (rows.length >= 50) { toast('一张纸最多 50 行'); return null; }
     const r = newRow(null, rows.length);
     rows.push(r);
     renderRows();
@@ -532,7 +532,9 @@ export function createPaperEditor(opts) {
     const el = elByKey(r.key);
     if (el) el.focus();
     emit();
-  });
+    return r;
+  }
+  $('#pe-add').addEventListener('click', () => addRowAt());
 
   /* ---------- v2.1 层级：提升为一级 / 降级为二级 ---------- */
   function promoteRow() {
@@ -653,6 +655,7 @@ export function createPaperEditor(opts) {
 
   // 一级按钮 → 展开/收起对应二级面板
   function togglePan(id) {
+    console.log('[Toolbar] clicked panel:', id);
     const target = mount.querySelector('#pe-pan-' + id) || mount.querySelector('#pe-slot-' + id);
     const isOpen = target && !target.hidden;
     mount.querySelectorAll('.tool-pan').forEach((p) => { p.hidden = true; });
@@ -717,6 +720,7 @@ export function createPaperEditor(opts) {
       paper.className = 'paper ' + (paperClass || '');
     },
     togglePan,
+    addRow: addRowAt,
     destroy() {
       destroyed = true;
       document.removeEventListener('selectionchange', onSelectionChange);

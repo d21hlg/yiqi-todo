@@ -284,6 +284,7 @@ export function formatDailyTodoTitle(date) {
 
 /** 找到该日期唯一一篇 daily Todo；旧数据同天多篇时取 createTime 最早的一篇 */
 export function getDailyTodoByDate(todos, date) {
+  if (!Array.isArray(todos)) return null;
   const arr = (todos || []).filter((t) => t.moduleType === 'daily' && t.targetDate === date);
   if (!arr.length) return null;
   arr.sort((a, b) => (a.createTime || 0) - (b.createTime || 0));
@@ -300,6 +301,7 @@ export function dailyHasContent(td) {
  * 标题统一 YYYYMMDD）。不直接删除数据；_mergedFrom 记录来源 id，由调用方决定合并落库。
  */
 export function mergeDuplicateDailyTodos(todos) {
+  if (!Array.isArray(todos)) return [];
   const map = new Map();
   const result = [];
   for (const todo of todos || []) {
@@ -349,6 +351,7 @@ export function hasUnfinishedCheckableTasks(todo) {
 }
 /* 过去 7 天（不含今天）中有未完成可勾选任务的日期，倒序 */
 export function weekUnfinishedDates(todos, today) {
+  if (!Array.isArray(todos)) return [];
   const out = [];
   for (let i = 1; i <= 7; i++) {
     const d = shiftDate(today, -i);
