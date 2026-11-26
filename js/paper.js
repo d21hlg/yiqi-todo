@@ -733,13 +733,30 @@ export function createPaperEditor(opts) {
         return true; // 拦截：有文字的无框行不允许 Backspace 删整条/误合并
       }
       const idx = rowIdx(row.key);
+      // v2.6.9：删空行后把焦点平稳移交上一行（无上一行则下一行/首行），
+      // preventScroll + 立即重聚焦 → 键盘不收回、页面不上下滚
+      let targetKey = '';
+      let targetOff = 0;
+      if (idx > 0) {
+        targetKey = rows[idx - 1].key;
+        const pe = elByKey(targetKey);
+        targetOff = pe ? (pe.textContent || '').length : 0;
+      } else if (rows[1]) {
+        targetKey = rows[1].key;
+        targetOff = 0;
+      }
       rows.splice(idx, 1);
       if (!rows.length) rows.push(newRow(null, 0));
-      if (activeRowKey === row.key) activeRowKey = '';
+      if (!targetKey) targetKey = rows[0] ? rows[0].key : '';
+      activeRowKey = targetKey;
       sel = null;
       renderRows();
       syncTarget();
       emit();
+      requestAnimationFrame(() => {
+        const el2 = elByKey(targetKey);
+        if (el2) { el2.focus({ preventScroll: true }); setCaret(el2, targetOff); }
+      });
       toast('已删除空文本行');
       return true;
     }
