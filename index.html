@@ -45,8 +45,19 @@
         }
         if (window.caches) { caches.keys().then(function (ks) { ks.forEach(function (k) { caches.delete(k); }); }); }
       } catch (e) { /* 忽略 */ }
+      console.log('[App] boot start');
+      console.log('[App] location:', window.location.href);
+      console.log('[App] userAgent:', navigator.userAgent);
       window.__bootErrs = [];
-      window.addEventListener('error', function (e) { window.__bootErrs.push(e.message); });
+      window.__resErrs = [];
+      window.addEventListener('error', function (e) {
+        var t = e.target;
+        if (t && (t.tagName === 'SCRIPT' || t.tagName === 'LINK')) {
+          window.__resErrs.push((t.src || t.href || '(unknown)'));
+          return;
+        }
+        window.__bootErrs.push(e.message);
+      }, true);
       window.addEventListener('unhandledrejection', function (e) {
         window.__bootErrs.push(String((e.reason && e.reason.message) || e.reason));
       });
@@ -56,9 +67,18 @@
         if (!el) return;
         el.hidden = false;
         var legacy = !('noModule' in HTMLScriptElement.prototype);
-        var msg = legacy ? '浏览器内核过旧，不支持本应用：请改用较新的 Chrome / Safari / Edge 打开' : ((window.__bootErrs || []).join(' | ') || '(无错误信息，可能网络未加载到脚本)');
+        var resFail = (window.__resErrs || []).length > 0;
+        var msg = legacy ? '浏览器内核过旧，不支持本应用：请改用较新的 Chrome / Safari / Edge 打开'
+          : (resFail ? '以下资源加载失败（多为网络/DNS 问题，可点重新加载重试）：\n' + window.__resErrs.join('\n')
+            : ((window.__bootErrs || []).join(' | ') || '(无错误信息，可能网络未加载到脚本)'));
         document.getElementById('boot-err').textContent = msg;
-        console.error('[Boot] app not booted:', msg);
+        console.error('[Boot] app not booted:', msg, 'resources:', window.__resErrs);
+        // 资源加载失败时自动重试一次（避免偶发网络抖动造成白屏）
+        if (resFail && !/[?&]retry=1/.test(window.location.search)) {
+          setTimeout(function () {
+            window.location.replace(window.location.pathname + '?retry=1' + window.location.hash);
+          }, 1200);
+        }
       }, 8000);
     })();
   </script>

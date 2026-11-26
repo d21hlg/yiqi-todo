@@ -467,9 +467,12 @@ export function createPaperEditor(opts) {
     activeRowKey = el.dataset.key;
     titleFocused = false;
     rowsEl.querySelectorAll('.task-row').forEach((tr) => tr.classList.toggle('active', tr.dataset.key === activeRowKey));
+    placeToolsAfterActive();
     syncTarget();
   });
   rowsEl.addEventListener('click', (e) => {
+    // v2.4.2：空白收起后，再点任何 task 行都重新唤出编辑栏
+    if (e.target.closest && e.target.closest('.task-row')) showTools();
     const act = e.target.dataset && e.target.dataset.act;
     const key = e.target.dataset && e.target.dataset.key;
     if (!act || !key) return;
@@ -687,10 +690,20 @@ export function createPaperEditor(opts) {
 
   /* ---- v2.4 工具卡自动显隐：点进 task 出现，失焦 180ms 后收起 ---- */
   let hideTimer = 0;
+  // 编辑栏放到当前正在编辑的 task 正下方（不悬浮遮挡）
+  function placeToolsAfterActive() {
+    const t = $('#pe-tools');
+    if (!t) return;
+    const row = rowsEl.querySelector('.task-row.active') || rowsEl.querySelector('.task-row:last-child');
+    if (row && row.nextElementSibling !== t) row.insertAdjacentElement('afterend', t);
+  }
   function showTools() {
     clearTimeout(hideTimer);
     const t = $('#pe-tools');
-    if (t && !readonly) t.classList.remove('is-hidden');
+    if (t && !readonly) {
+      placeToolsAfterActive();
+      t.classList.remove('is-hidden');
+    }
   }
   function scheduleHideTools() {
     clearTimeout(hideTimer);
@@ -700,7 +713,14 @@ export function createPaperEditor(opts) {
     }, 180);
   }
   mount.addEventListener('focusin', (e) => {
-    if (e.target.closest && e.target.closest('#pe-rows, #pe-title, #pe-tools')) showTools();
+    if (e.target.closest && e.target.closest('#pe-rows, #pe-title, #pe-tools')) {
+      showTools();
+      // 保证当前 task 不被键盘/编辑栏挡住
+      setTimeout(() => {
+        const row = rowsEl.querySelector('.task-row.active');
+        if (row && row.scrollIntoView) row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      }, 120);
+    }
   });
   // v2.4.1：blur 不再自动收起（选色号/字号会触发 blur，导致编辑栏闪退）
   // 收起只由：关闭按钮 / 点击编辑栏与任务区之外的空白 / 页面切换（编辑器销毁）触发

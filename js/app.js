@@ -19,6 +19,7 @@ const tabbar = document.getElementById('tabbar');
 const toastEl = document.getElementById('toast');
 const offlineEl = document.getElementById('offline');
 
+console.log('[App] root render start (module loaded)');
 const state = {
   user: null,
   todos: [],

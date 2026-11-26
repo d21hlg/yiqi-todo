@@ -334,12 +334,13 @@ body.no-tab #view { padding-bottom: 130px; }
 
 /* ==== v2.4 文字编辑工具卡：贴近输入、自动显隐 ==== */
 #pe-tools {
-  position: sticky;
-  bottom: calc(8px + env(safe-area-inset-bottom));
-  z-index: 80;
+  /* v2.4.2：插入当前 task 正下方的流内卡片，不遮挡正在编辑的行 */
+  position: relative;
+  z-index: 20;
+  margin: 6px 0 12px;
   pointer-events: auto;
-  background: rgba(255, 255, 255, 0.96);
-  backdrop-filter: blur(12px);
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.08);
 }
 #pe-tools.is-hidden { display: none; }
 #pe-tools button, #pe-tools .tool, #pe-tools .dot { pointer-events: auto; }
