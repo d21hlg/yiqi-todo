@@ -53,7 +53,9 @@
       window.addEventListener('error', function (e) {
         var t = e.target;
         if (t && (t.tagName === 'SCRIPT' || t.tagName === 'LINK')) {
-          window.__resErrs.push((t.src || t.href || '(unknown)'));
+          var u = t.src || t.href || '';
+          // 只有关键资源失败才算加载失败；manifest/图标/favicon 等失败忽略（部分 WebView 会误报）
+          if (/js\/app\.js(\?|$)/.test(u) || /css\/app\.css(\?|$)/.test(u)) window.__resErrs.push(u);
           return;
         }
         window.__bootErrs.push(e.message);

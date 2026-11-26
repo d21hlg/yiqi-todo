@@ -118,6 +118,7 @@ export function createPaperEditor(opts) {
         ${readonly ? '' : `<span class="task-del" data-act="del" data-key="${r.key}">⋯</span>`}
       </div>`;
     }).join('');
+    placeToolsAfterActive(); // v2.4.3：innerHTML 重建后把编辑栏挂回当前 task 下方
   }
 
   function rowByKey(key) { return rows.find((r) => r.key === key); }
