@@ -37,6 +37,7 @@ function segsToHtml(segs, done) {
 
 export function createPaperEditor(opts) {
   const mount = opts.mount;
+  const readonly = opts.editable === false; // 必须在所有使用点之前声明（TDZ 修复）
   const onChange = opts.onChange || (() => {});
   const rows = (opts.initial && opts.initial.tasks && opts.initial.tasks.length
     ? opts.initial.tasks : [null]).map((t, i) => newRow(t, i));
@@ -112,7 +113,6 @@ export function createPaperEditor(opts) {
   if (!readonly) document.body.appendChild(floatBar);
 
   const $ = (sel2) => mount.querySelector(sel2);
-  const readonly = opts.editable === false;
   if (readonly) mount.classList.add('pe-readonly');
   const rowsEl = $('#pe-rows');
   const titleEl = $('#pe-title');
