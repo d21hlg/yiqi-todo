@@ -565,8 +565,12 @@ export function createPaperEditor(opts) {
     if (!row) return;
     if (act === 'check') {
       if (!row.hasCheckbox) return;
-      row.completed = !row.completed; // 仅切换完成 + 进度 + 保存，不 focus、不弹编辑栏
+      const elc = elByKey(key);
+      const wasActive = elc && (document.activeElement === elc || (elc.contains && elc.contains(document.activeElement)));
+      const off = wasActive ? caretOffset(elc) : -1;
+      row.completed = !row.completed; // 仅切换完成 + 进度 + 保存，不弹编辑栏
       rerenderRow(key, null);
+      if (wasActive && elc) { elc.focus({ preventScroll: true }); setCaret(elc, Math.max(0, off)); }
       emit();
     } else if (act === 'activate') {
       activeRowKey = key;
@@ -905,6 +909,18 @@ export function createPaperEditor(opts) {
 
   $('#pe-clear').addEventListener('click', clearFormat);
 
+  /* ---- v2.6.6 内部控件防抢焦点（移动端输入法不跳的关键）：
+        勾选框/工具栏/控制区/底部设置区在 pointerdown 阶段 preventDefault，
+        焦点始终留在 contenteditable 上；select/input/textarea 除外 ---- */
+  const KEEP_FOCUS_SEL = '#pe-tools, #pe-ckbar, .pcheck, .todo-bottom-actions, .tool-pan, .tool-l1, .tool-close';
+  const onKeepFocusPD = (e) => {
+    const t = e.target;
+    if (!t || !t.closest) return;
+    if (t.closest('select, input, textarea')) return;
+    if (t.closest(KEEP_FOCUS_SEL)) e.preventDefault();
+  };
+  document.addEventListener('pointerdown', onKeepFocusPD, true);
+
   /* ---- v2.4 工具卡自动显隐：点进 task 出现，失焦 180ms 后收起 ---- */
   let hideTimer = 0;
   // 编辑栏放到当前正在编辑的 task 正下方（不悬浮遮挡）
@@ -1003,6 +1019,7 @@ export function createPaperEditor(opts) {
       destroyed = true;
       document.removeEventListener('selectionchange', onSelectionChange);
       document.removeEventListener('pointerdown', onDocPointerDown);
+      document.removeEventListener('pointerdown', onKeepFocusPD, true);
       mount.innerHTML = '';
     }
   };
