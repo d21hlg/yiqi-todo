@@ -261,6 +261,68 @@ export function createPaperEditor(opts) {
     if (caretOffset != null) setCaret(el, caretOffset);
   }
 
+  /* v2.6.5：只重绘行外壳（勾选控件/层级类/标题类），不碰 contenteditable 内容 → 输入法不跳 */
+  function rerenderRowChrome(key) {
+    const row = rowByKey(key);
+    const el = elByKey(key);
+    if (!row || !el) return;
+    const done = row.hasCheckbox && row.completed;
+    el.classList.toggle('done', done);
+    el.classList.toggle('heading-1', row.textType === 'heading1');
+    el.classList.toggle('heading-2', row.textType === 'heading2');
+    const rowEl = el.parentNode;
+    const old = rowEl.querySelector('.pcheck, .pcheck-ghost');
+    if (row.hasCheckbox === false) {
+      if (old) old.remove();
+      rowEl.classList.add('no-ctrl');
+    } else {
+      rowEl.classList.remove('no-ctrl');
+      const cls = `pcheck ${row.level === 2 ? 'circle' : ''} ${done ? 'on' : ''}`;
+      if (old) old.className = cls;
+      else {
+        const sp = document.createElement('span');
+        sp.className = cls; sp.dataset.act = 'check'; sp.dataset.key = row.key;
+        rowEl.insertBefore(sp, el);
+      }
+    }
+    rowEl.classList.toggle('level-2', row.level === 2);
+    rowEl.classList.toggle('level-1', row.level !== 2);
+  }
+
+  /* 恢复光标但不引起手机键盘跳动：已在编辑则不重复 focus */
+  function restoreCaret(key, offset) {
+    requestAnimationFrame(() => {
+      const el2 = elByKey(key);
+      if (!el2) return;
+      const ae = document.activeElement;
+      if (ae !== el2 && !(el2.contains && el2.contains(ae))) {
+        el2.focus({ preventScroll: true });
+      }
+      setCaret(el2, offset);
+    });
+  }
+
+  /* 受控合并：当前行文字(+富文本)追加到上一行末尾，删除当前行，光标落在上一行原文末尾 */
+  function mergeIntoPrevious(row) {
+    const idx = rowIdx(row.key);
+    if (idx <= 0) {
+      restoreCaret(row.key, 0); // 没有上一条：保留当前行，不乱合并
+      return;
+    }
+    const prev = rows[idx - 1];
+    const prevEl = elByKey(prev.key);
+    const caretOff = prevEl ? (prevEl.textContent || '').length : prev.segs.map((x) => x.t).join('').length;
+    prev.segs = prev.segs.concat(row.segs);
+    rows.splice(idx, 1);
+    if (activeRowKey === row.key) activeRowKey = prev.key;
+    sel = null;
+    renderRows();
+    syncTarget();
+    emit();
+    restoreCaret(prev.key, caretOff);
+    toast('已合并到上一条');
+  }
+
   function setCaret(el, offset) {
     const range = document.createRange();
     const selObj = window.getSelection();
@@ -547,6 +609,7 @@ export function createPaperEditor(opts) {
   $('#pe-add').addEventListener('click', () => addRowAt());
   const ckbar = $('#pe-ckbar');
   if (ckbar) {
+    ckbar.addEventListener('mousedown', (e) => e.preventDefault()); // 不抢 editor 焦点 → 键盘不收起
     ckbar.addEventListener('click', (e) => {
       const b = e.target.closest && e.target.closest('[data-ckbar]');
       if (!b) return;
@@ -642,41 +705,22 @@ export function createPaperEditor(opts) {
     const isH1 = row.textType === 'heading1';
     const isH2 = row.textType === 'heading2';
     const hasCk = row.hasCheckbox !== false;
-    const finish = () => {
-      syncTarget();
-      emit();
-      setTimeout(() => {
-        const el2 = elByKey(row.key);
-        if (el2) { el2.focus(); setCaret(el2, 0); }
-      }, 0);
-    };
-    if (isH2 && hasCk) { row.hasCheckbox = false; row.completed = false; rerenderRow(row.key, 0); finish(); toast('已删除圆圈（仍是二级标题）'); return true; }
-    if (isH2 && !hasCk) { row.textType = 'heading1'; row.level = 1; row.parentId = ''; row.hasCheckbox = false; row.completed = false; row.countInProgress = false; renderRows(); finish(); toast('已变为一级标题'); return true; }
-    if (isH1 && hasCk) { row.hasCheckbox = false; row.completed = false; rerenderRow(row.key, 0); finish(); toast('已删除勾选框（仍是一级标题）'); return true; }
-    // v2.6.4 重点：一级标题无勾选框 → 降级为普通文字，绝不删除整条 task
-    if (isH1 && !hasCk) {
-      row.textType = 'normal';
-      row.level = 1;
-      row.parentId = '';
-      row.hasCheckbox = false;
-      row.completed = false;
-      row.countInProgress = false; // 无勾选框不计入进度
-      renderRows();
-      finish();
-      toast('已降级为普通文字（任务保留）');
-      return true;
-    }
+    const finish = () => { syncTarget(); emit(); restoreCaret(row.key, 0); };
+    if (isH2 && hasCk) { row.hasCheckbox = false; row.completed = false; rerenderRowChrome(row.key); finish(); toast('已删除圆圈（仍是二级标题）'); return true; }
+    if (isH2 && !hasCk) { row.textType = 'heading1'; row.level = 1; row.parentId = ''; row.hasCheckbox = false; row.completed = false; row.countInProgress = false; rerenderRowChrome(row.key); finish(); toast('已变为一级标题'); return true; }
+    if (isH1 && hasCk) { row.hasCheckbox = false; row.completed = false; rerenderRowChrome(row.key); finish(); toast('已删除勾选框（仍是一级标题）'); return true; }
+    // v2.6.5 重点：一级标题无框 + 行首删除 = 受控合并到上一条（不删自己前先降级、不依赖浏览器默认合并）
+    if (isH1 && !hasCk) { mergeIntoPrevious(row); return true; }
     if (!isH1 && !isH2) {
       if (hasCk) {
-        if (row.level === 2) { row.level = 1; row.parentId = ''; renderRows(); finish(); toast('已提升为一级（方形勾选框）；行首再按删除键去掉勾选框'); }
-        else { row.hasCheckbox = false; row.completed = false; row.countInProgress = false; rerenderRow(row.key, 0); finish(); toast('已删除勾选框（文字保留）'); }
+        if (row.level === 2) { row.level = 1; row.parentId = ''; rerenderRowChrome(row.key); finish(); toast('已提升为一级（方形勾选框）；行首再按删除键去掉勾选框'); }
+        else { row.hasCheckbox = false; row.completed = false; row.countInProgress = false; rerenderRowChrome(row.key); finish(); toast('已删除勾选框（文字保留）'); }
         return true;
       }
-      // 普通无框行：有文字 → 拦截不删（防误删整条）；空文字 → 才允许删除整行
       const hasText = row.segs.some((sg) => (sg.t || '').trim()) || String(row.plain || '').trim();
       if (hasText) {
         console.log('[TaskDeleteBackward] normal task has text, do not delete task:', row.key);
-        return true;
+        return true; // 拦截：有文字的无框行不允许 Backspace 删整条/误合并
       }
       const idx = rowIdx(row.key);
       rows.splice(idx, 1);
@@ -691,6 +735,7 @@ export function createPaperEditor(opts) {
     }
     return false;
   }
+
   function handleDeleteBackward(el, source) {
     const row = rowByKey(el.dataset.key);
     if (!row) return false;
@@ -793,7 +838,7 @@ export function createPaperEditor(opts) {
     if (!row) { toast('请先点一条任务再设置标题'); return; }
     row.textType = tt;
     row.countInProgress = tt === 'normal' ? undefined : false;
-    rerenderRow(row.key, null);
+    rerenderRowChrome(row.key); // 不碰输入区 DOM → 键盘不跳
     syncTarget();
     emit();
   }
@@ -820,7 +865,7 @@ export function createPaperEditor(opts) {
         row.countInProgress = isHead ? false : undefined;
       }
     }
-    renderRows();
+    rerenderRowChrome(row.key); // 不重建输入区 → 输入法保持打开
     syncTarget();
     emit();
   }
