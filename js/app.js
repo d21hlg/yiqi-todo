@@ -9,7 +9,7 @@ import {
 } from './util.js';
 import { TodoRepository, GroupRepository, getLocalUser, saveLocalUser, newTodoDoc, exportAll, importAll, uploadLocalToCloud } from './db.js';
 import { USE_SUPABASE } from './config.js';
-import { initAuth, supaState, signInWithEmail, signOutCloud, verifyWithCode } from './supabase-db.js';
+import { initAuth, supaState, signInWithEmail, signOutCloud, verifyWithCode, signInWithPasswordOrSignup } from './supabase-db.js';
 import { createPaperEditor } from './paper.js';
 import { getTodoProgress, weekUnfinishedDates, fmtShortDate, sortTopicTodos, THEMES, THEME_BGS, datesForRule, hasTaskFromRule, defaultCalendar } from './util.js';
 import { getMeta, setMeta } from './db.js';
@@ -1038,7 +1038,10 @@ function renderMine() {
       <div class="t-mut" style="line-height:1.8">输入邮箱 → 点「发送验证邮件」→ 两种方式任选其一完成登录（无密码）：① 点击邮件里的登录链接；② 链接打不开时（国内网络常见），把邮件里的 <b>6 位验证码</b> 填到下面登录。登录后 To Do 存云端，可在多台设备同步；首次登录后建议点「上传本机数据到云端」完成迁移。</div>
       <div class="form-row"><input class="cat-input" id="m-email" type="email" placeholder="you@example.com" /></div>
       <div class="form-row"><button class="btn primary" id="m-login">发送验证邮件</button></div>
-      <div class="form-row"><input class="cat-input" id="m-code" placeholder="邮件里的 6 位验证码" maxlength="6" inputmode="numeric" style="flex:1" /><button class="btn ghost" id="m-verify">验证码登录</button></div>`}
+      <div class="form-row"><input class="cat-input" id="m-code" placeholder="邮件里的 6 位验证码" maxlength="6" inputmode="numeric" style="flex:1" /><button class="btn ghost" id="m-verify">验证码登录</button></div>
+      <div class="row" style="margin-top:6px"><b style="font-size:12px">推荐：密码登录 / 注册（不走邮件，国内网络最稳）</b></div>
+      <div class="form-row"><input class="cat-input" id="m-pass" type="password" placeholder="设置密码（≥6 位，注册与登录同密码）" style="flex:1" /><button class="btn primary" id="m-pw">密码登录/注册</button></div>
+      <div class="t-mut">已有账号=直接登录；没注册过=自动注册并登录（已开自动确认，无需点邮件）。</div>`}
     </div>
     ` : ''}
     <div class="card">
@@ -1110,6 +1113,21 @@ function renderMine() {
       toast('登录成功，正在切换云端数据…');
     } catch (e) { toast(e.message || '验证失败，请重发验证码'); }
     mVerifyBtn.disabled = false;
+  };
+  const mPwBtn = document.getElementById('m-pw');
+  if (mPwBtn) mPwBtn.onclick = async () => {
+    const email = (document.getElementById('m-email').value || '').trim();
+    const pw = document.getElementById('m-pass').value || '';
+    if (!email || !email.includes('@')) { toast('请先填写邮箱地址'); return; }
+    if (pw.length < 6) { toast('密码至少 6 位'); return; }
+    mPwBtn.disabled = true;
+    mPwBtn.textContent = '登录中…';
+    try {
+      await signInWithPasswordOrSignup(email, pw);
+      toast('登录成功，正在切换云端数据…');
+    } catch (e) { toast(e.message || '登录失败'); }
+    mPwBtn.disabled = false;
+    mPwBtn.textContent = '密码登录/注册';
   };
   const mUpBtn = document.getElementById('m-upcloud');
   if (mUpBtn) mUpBtn.onclick = async () => {

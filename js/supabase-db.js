@@ -73,6 +73,21 @@ export async function signInWithEmail(email, redirectTo) {
   });
   if (error) throw error;
 }
+/* v2.3 备用登录二：密码登录/注册（完全不依赖邮件；已开自动确认，注册即登录） */
+export async function signInWithPasswordOrSignup(email, password) {
+  const c = await client();
+  const em = String(email || '').trim();
+  let r = await c.auth.signInWithPassword({ email: em, password });
+  if (r.error && /invalid login credentials/i.test(r.error.message || '')) {
+    const up = await c.auth.signUp({ email: em, password });
+    if (up.error && /already registered/i.test(up.error.message || '')) {
+      throw new Error('该邮箱已注册：请输入正确密码；忘记密码可改用邮箱验证登录');
+    }
+    r = up;
+  }
+  if (r.error) throw new Error(r.error.message || '登录失败');
+}
+
 export async function signOutCloud() {
   const c = await client();
   await c.auth.signOut();

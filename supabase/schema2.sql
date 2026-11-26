@@ -72,7 +72,7 @@ drop policy if exists todos_all_own on public.todos;
 drop policy if exists todos_select on public.todos;
 create policy todos_select on public.todos for select using (
   owner_id = auth.uid()
-  or (is_shared and group_id in (select group_id from public.group_members
+  or (is_shared and group_id::text in (select group_id from public.group_members
                                  where user_id = auth.uid() and status = 'active'))
 );
 drop policy if exists todos_insert on public.todos;
@@ -80,11 +80,11 @@ create policy todos_insert on public.todos for insert with check (owner_id = aut
 drop policy if exists todos_update on public.todos;
 create policy todos_update on public.todos for update using (
   owner_id = auth.uid()
-  or (is_shared and group_id in (select group_id from public.group_members
+  or (is_shared and group_id::text in (select group_id from public.group_members
                                  where user_id = auth.uid() and status = 'active'))
 ) with check (
   owner_id = auth.uid()
-  or (is_shared and group_id in (select group_id from public.group_members
+  or (is_shared and group_id::text in (select group_id from public.group_members
                                  where user_id = auth.uid() and status = 'active'))
 );
 drop policy if exists todos_delete on public.todos;
