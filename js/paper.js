@@ -653,9 +653,40 @@ export function createPaperEditor(opts) {
     if (isH2 && hasCk) { row.hasCheckbox = false; row.completed = false; rerenderRow(row.key, 0); finish(); toast('已删除圆圈（仍是二级标题）'); return true; }
     if (isH2 && !hasCk) { row.textType = 'heading1'; row.level = 1; row.parentId = ''; row.hasCheckbox = false; row.completed = false; row.countInProgress = false; renderRows(); finish(); toast('已变为一级标题'); return true; }
     if (isH1 && hasCk) { row.hasCheckbox = false; row.completed = false; rerenderRow(row.key, 0); finish(); toast('已删除勾选框（仍是一级标题）'); return true; }
-    if (!isH1 && !isH2 && hasCk) {
-      if (row.level === 2) { row.level = 1; row.parentId = ''; renderRows(); finish(); toast('已提升为一级（方形勾选框）；行首再按删除键去掉勾选框'); }
-      else { row.hasCheckbox = false; row.completed = false; rerenderRow(row.key, 0); finish(); toast('已删除勾选框（文字保留）'); }
+    // v2.6.4 重点：一级标题无勾选框 → 降级为普通文字，绝不删除整条 task
+    if (isH1 && !hasCk) {
+      row.textType = 'normal';
+      row.level = 1;
+      row.parentId = '';
+      row.hasCheckbox = false;
+      row.completed = false;
+      row.countInProgress = false; // 无勾选框不计入进度
+      renderRows();
+      finish();
+      toast('已降级为普通文字（任务保留）');
+      return true;
+    }
+    if (!isH1 && !isH2) {
+      if (hasCk) {
+        if (row.level === 2) { row.level = 1; row.parentId = ''; renderRows(); finish(); toast('已提升为一级（方形勾选框）；行首再按删除键去掉勾选框'); }
+        else { row.hasCheckbox = false; row.completed = false; row.countInProgress = false; rerenderRow(row.key, 0); finish(); toast('已删除勾选框（文字保留）'); }
+        return true;
+      }
+      // 普通无框行：有文字 → 拦截不删（防误删整条）；空文字 → 才允许删除整行
+      const hasText = row.segs.some((sg) => (sg.t || '').trim()) || String(row.plain || '').trim();
+      if (hasText) {
+        console.log('[TaskDeleteBackward] normal task has text, do not delete task:', row.key);
+        return true;
+      }
+      const idx = rowIdx(row.key);
+      rows.splice(idx, 1);
+      if (!rows.length) rows.push(newRow(null, 0));
+      if (activeRowKey === row.key) activeRowKey = '';
+      sel = null;
+      renderRows();
+      syncTarget();
+      emit();
+      toast('已删除空文本行');
       return true;
     }
     return false;
