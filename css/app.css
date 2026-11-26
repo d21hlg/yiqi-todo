@@ -359,3 +359,8 @@ body.no-tab #view { padding-bottom: 130px; }
   font-size: 11px; padding: 3px 10px; border-radius: 999px;
   background: rgba(0, 0, 0, 0.55); color: #fff; cursor: pointer;
 }
+
+/* v2.6 任务标题类样式 */
+.task-content.heading-1 { font-size: 22px; font-weight: 700; line-height: 1.5; }
+.task-content.heading-2 { font-size: 18px; font-weight: 600; line-height: 1.5; }
+.tool-btn.l1.ckbtn { border-style: dashed; }

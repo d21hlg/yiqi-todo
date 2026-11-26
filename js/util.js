@@ -117,12 +117,24 @@ export function segStyle(s, done) {
 /** 旧数据兼容：hasCheckbox 缺省视为 true；v2.1 增加 level（缺省 1）与 parentId（仅二级） */
 export function normalizeTask(task) {
   const level = task.level === 2 ? 2 : 1;
+  const textType = task.textType === 'heading1' || task.textType === 'heading2' ? task.textType : 'normal';
   return Object.assign({}, task, {
     hasCheckbox: task.hasCheckbox !== false,
     completed: !!task.completed,
     level,
-    parentId: level === 2 ? (task.parentId || '') : undefined
+    parentId: level === 2 ? (task.parentId || '') : undefined,
+    textType,
+    countInProgress: task.countInProgress === false ? false : textType === 'normal'
   });
+}
+
+/* v2.6 进度口径：只统计 有勾选控件 且 非标题类 且 countInProgress !== false */
+export function shouldCountTaskInProgress(task) {
+  if (!task || typeof task !== 'object') return false;
+  if (task.hasCheckbox === false) return false;
+  if (task.textType === 'heading1' || task.textType === 'heading2') return false;
+  if (task.countInProgress === false) return false;
+  return true;
 }
 
 /** tasks 数组归一（兼容老数据/无 rich） */
@@ -164,13 +176,13 @@ export function segsFromTask(task) {
 
 /* ---------- 完成统计：只算带 checkbox 的 task ---------- */
 export function tasksStat(tasks) {
-  const cb = (tasks || []).filter((t) => t.hasCheckbox !== false);
+  const cb = (tasks || []).filter((t) => shouldCountTaskInProgress(t));
   const done = cb.filter((t) => t.completed).length;
   return { total: cb.length, done, percent: cb.length ? Math.round((done / cb.length) * 100) : 0 };
 }
 export function isTodoCompleted(x) {
   const tasks = Array.isArray(x) ? x : safeTasksArray(x && x.tasks);
-  const cb = tasks.filter((t) => t && t.hasCheckbox !== false);
+  const cb = tasks.filter((t) => shouldCountTaskInProgress(t));
   return cb.length > 0 && cb.every((t) => t.completed);
 }
 
@@ -351,7 +363,7 @@ export function safeTasksArray(v) {
 /* 进度实时计算：只统计带勾选框/圆圈的一二级 task；任何改动后调用即得最新值 */
 export function getTodoProgress(todo) {
   const tasks = safeTasksArray(todo && todo.tasks);
-  const checkable = tasks.filter((t) => t && t.hasCheckbox !== false);
+  const checkable = tasks.filter((t) => shouldCountTaskInProgress(t));
   const total = checkable.length;
   const done = checkable.filter((t) => t.completed).length;
   return {
@@ -362,7 +374,7 @@ export function getTodoProgress(todo) {
   };
 }
 export function hasUnfinishedCheckableTasks(todo) {
-  const c = safeTasksArray(todo && todo.tasks).filter((t) => t && t.hasCheckbox !== false);
+  const c = safeTasksArray(todo && todo.tasks).filter((t) => shouldCountTaskInProgress(t));
   return c.length > 0 && c.some((t) => !t.completed);
 }
 /* 过去 7 天（不含今天）中有未完成可勾选任务的日期，倒序 */

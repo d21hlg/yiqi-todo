@@ -338,6 +338,7 @@ async function flushDailySave() {
   doc.titleCustom = true;
   try {
     await TodoRepository.updateTodo(doc);
+    queueSync(); // v2.6：落库后触发后台云同步
     const i = state.todos.findIndex((t) => t.id === doc.id);
     if (i >= 0) state.todos[i] = doc;
     if (state.daily.draftId === doc.id && tasks.some((t) => (t.text || '').trim())) state.daily.draftId = null;
@@ -555,7 +556,7 @@ async function flushCateSave() {
   doc.updateTime = Date.now();
   doc.lastEditedBy = state.user.ownerId;
   doc.lastEditedByName = state.user.nickName;
-  try { await TodoRepository.updateTodo(doc); } catch (e) { toast('保存失败：' + e.message); }
+  try { await TodoRepository.updateTodo(doc); queueSync(); } catch (e) { toast('保存失败：' + e.message); }
 }
 function destroyCateEditor() {
   if (cateSave) { clearTimeout(cateSave.timer); if (cateSave.editor) cateSave.editor.destroy(); }
@@ -1062,6 +1063,7 @@ async function renderEdit(idOrNew, params) {
     const next = buildDoc();
     if (state.edit.isNew) {
       await TodoRepository.createTodo(next);
+      queueSync();
       state.edit.isNew = false;
       state.edit.doc = next;
       state.todos.push(next);
@@ -1071,6 +1073,7 @@ async function renderEdit(idOrNew, params) {
       if (saveStateEl()) saveStateEl().textContent = '已保存 ' + fmtMinute(next.updateTime);
     } else {
       await TodoRepository.updateTodo(next);
+      queueSync();
       state.edit.doc = next;
       const i = state.todos.findIndex((t) => t.id === next.id);
       if (i >= 0) state.todos[i] = next;

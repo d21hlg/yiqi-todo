@@ -24,6 +24,8 @@ function newRow(task, idx) {
     // v2.1：level 1|2（旧数据缺省一级，方形勾选框）；二级为圆圈并记录 parentId
     level: t.level === 2 ? 2 : 1,
     parentId: t.level === 2 ? (t.parentId || '') : '',
+    textType: t.textType === 'heading1' || t.textType === 'heading2' ? t.textType : 'normal',
+    countInProgress: t.countInProgress === false ? false : undefined,
     segs: segsFromTask(t)
   };
 }
@@ -68,10 +70,19 @@ export function createPaperEditor(opts) {
         <span class="tool-close" id="pe-close" title="收起编辑栏">×</span>
       </div>
       <div class="tool-l1">
+        <button class="tool-btn l1" data-pan="title">标题</button>
         <button class="tool-btn l1" data-pan="fmt">样式</button>
         <button class="tool-btn l1" data-pan="size">字号</button>
         <button class="tool-btn l1" data-pan="color">文字色</button>
         <button class="tool-btn l1" data-pan="bg">背景色</button>
+        <button class="tool-btn l1 ckbtn" data-ck="1" title="添加/删除一级方形勾选框">☐ 一级</button>
+        <button class="tool-btn l1 ckbtn" data-ck="2" title="添加/删除二级圆形勾选框">○ 二级</button>
+      </div>
+      <div class="tool-pan" id="pe-pan-title" hidden>
+        <span class="tool" data-tt="normal">普通文字</span>
+        <span class="tool" data-tt="heading1">一级标题</span>
+        <span class="tool" data-tt="heading2">二级标题</span>
+        <span class="t-mut">标题类不计入进度</span>
       </div>
       <div class="tool-pan" id="pe-pan-fmt" hidden>
         <span class="tool chip-b" data-fmt="b">B</span>
@@ -115,7 +126,7 @@ export function createPaperEditor(opts) {
         : '';
       return `<div class="task-row ${r.level === 2 ? 'level-2' : 'level-1'} ${r.hasCheckbox === false ? 'no-ctrl' : ''} ${activeRowKey === r.key ? 'active' : ''}" data-key="${r.key}">
         ${check}
-        <div class="task-content ${done ? 'done' : ''}" contenteditable="${readonly ? 'false' : 'true'}" spellcheck="false"
+        <div class="task-content ${done ? 'done' : ''} ${r.textType === 'heading1' ? 'heading-1' : r.textType === 'heading2' ? 'heading-2' : ''}" contenteditable="${readonly ? 'false' : 'true'}" spellcheck="false"
           data-ph="写一条任务…" data-key="${r.key}">${segsToHtml(r.segs, done)}</div>
         ${readonly ? '' : `<span class="task-del" data-act="del" data-key="${r.key}">⋯</span>`}
       </div>`;
@@ -153,7 +164,9 @@ export function createPaperEditor(opts) {
           text,
           completed: !!(r.hasCheckbox && r.completed),
           hasCheckbox: r.hasCheckbox,
-          level: r.level === 2 ? 2 : 1
+          level: r.level === 2 ? 2 : 1,
+          textType: r.textType && r.textType !== 'normal' ? r.textType : undefined,
+          countInProgress: r.countInProgress === false ? false : undefined
         };
         if (task.level === 2 && r.parentId) task.parentId = r.parentId;
         if (rich) task.rich = rich;
@@ -221,6 +234,8 @@ export function createPaperEditor(opts) {
     const done = row.hasCheckbox && row.completed;
     el.classList.toggle('done', done);
     el.innerHTML = segsToHtml(row.segs, done);
+    el.classList.toggle('heading-1', row.textType === 'heading1');
+    el.classList.toggle('heading-2', row.textType === 'heading2');
     const rowEl = el.parentNode;
     const old = rowEl.querySelector('.pcheck, .pcheck-ghost');
     if (row.hasCheckbox === false) {
@@ -474,8 +489,8 @@ export function createPaperEditor(opts) {
     syncTarget();
   });
   rowsEl.addEventListener('click', (e) => {
-    // v2.4.2：空白收起后，再点任何 task 行都重新唤出编辑栏
-    if (e.target.closest && e.target.closest('.task-row')) showTools();
+    // v2.6：点勾选框只切换完成，不唤出编辑栏；点文字区域才唤出
+    if (e.target.closest && e.target.closest('.task-row') && !e.target.closest('.pcheck')) showTools();
     const act = e.target.dataset && e.target.dataset.act;
     const key = e.target.dataset && e.target.dataset.key;
     if (!act || !key) return;
@@ -483,9 +498,8 @@ export function createPaperEditor(opts) {
     if (!row) return;
     if (act === 'check') {
       if (!row.hasCheckbox) return;
-      row.completed = !row.completed;
+      row.completed = !row.completed; // 仅切换完成 + 进度 + 保存，不 focus、不弹编辑栏
       rerenderRow(key, null);
-      elByKey(key) && elByKey(key).focus();
       emit();
     } else if (act === 'activate') {
       activeRowKey = key;
@@ -574,6 +588,27 @@ export function createPaperEditor(opts) {
     return false;
   }
 
+  rowsEl.addEventListener('beforeinput', (e) => {
+    if (!e.inputType || e.inputType !== 'deleteContentBackward') return;
+    const el = e.target && e.target.closest ? e.target.closest('.task-content') : null;
+    if (!el) return;
+    const row = rowByKey(el.dataset.key);
+    if (!row || row.hasCheckbox === false) return;
+    if (!caretAtStart(el)) return;
+    e.preventDefault();
+    if (row.level === 2) {
+      row.level = 1; row.parentId = '';
+      renderRows(); syncTarget(); emit();
+      const el2 = elByKey(row.key);
+      if (el2) { el2.focus(); setCaret(el2, 0); }
+      toast('已提升为一级（方形勾选框）；行首再按删除键去掉勾选框');
+    } else {
+      row.hasCheckbox = false; row.completed = false;
+      rerenderRow(row.key, 0); syncTarget(); emit();
+      toast('已删除勾选框（文字保留）');
+    }
+  });
+
   rowsEl.addEventListener('keydown', (e) => {
     const el = e.target.closest && e.target.closest('.task-content');
     if (!el) return;
@@ -658,10 +693,55 @@ export function createPaperEditor(opts) {
     }
   }
 
-  // 工具面板 + 浮动条的事件委托（data-pan / data-fmt / data-size / data-c / data-bg / data-clear）
+  /* ---- v2.6 标题类型 / 勾选控件开关（作用于当前行或选区所在行，操作后编辑栏保持打开） ---- */
+  function currentRow() {
+    if (sel) return rowByKey(sel.key);
+    if (activeRowKey && !titleFocused) return rowByKey(activeRowKey);
+    return null;
+  }
+  function applyTextType(tt) {
+    const row = currentRow();
+    if (!row) { toast('请先点一条任务再设置标题'); return; }
+    row.textType = tt;
+    row.countInProgress = tt === 'normal' ? undefined : false;
+    rerenderRow(row.key, null);
+    syncTarget();
+    emit();
+  }
+  function toggleCheckLevel(level) {
+    const row = currentRow();
+    if (!row) { toast('请先点一条任务再操作勾选控件'); return; }
+    const isHead = row.textType === 'heading1' || row.textType === 'heading2';
+    if (level === 1) {
+      if (row.level === 1 && row.hasCheckbox !== false) {
+        row.hasCheckbox = false; row.completed = false; row.parentId = '';
+      } else {
+        row.hasCheckbox = true; row.completed = false; row.level = 1; row.parentId = '';
+        row.countInProgress = isHead ? false : undefined;
+      }
+    } else {
+      if (row.level === 2 && row.hasCheckbox !== false) {
+        row.hasCheckbox = false; row.completed = false; // 保留二级缩进
+      } else {
+        row.hasCheckbox = true; row.completed = false; row.level = 2;
+        if (!row.parentId) {
+          const idx = rowIdx(row.key);
+          for (let i = idx - 1; i >= 0; i--) { if ((rows[i].level || 1) === 1) { row.parentId = rows[i].id; break; } }
+        }
+        row.countInProgress = isHead ? false : undefined;
+      }
+    }
+    renderRows();
+    syncTarget();
+    emit();
+  }
+
+  // 工具面板 + 浮动条的事件委托（data-pan / data-fmt / data-size / data-c / data-bg / data-clear / data-tt / data-ck）
   function onToolClick(e) {
     const d = e.target.dataset;
     if (!d) return;
+    if (d.tt) { applyTextType(d.tt); e.preventDefault(); return; }
+    if (d.ck) { toggleCheckLevel(Number(d.ck)); e.preventDefault(); return; }
     if (d.pan) { togglePan(d.pan); e.preventDefault(); return; }
     if (d.fmt === 'b') toggleField('b');
     else if (d.fmt === 'i') toggleField('i');
