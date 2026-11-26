@@ -102,10 +102,22 @@ function setBadge(mode) {
   if (!syncBadgeEl) {
     syncBadgeEl = document.createElement('div');
     syncBadgeEl.id = 'sync-badge';
-    syncBadgeEl.onclick = () => { toast('正在尝试连接云端…'); tryCloudSync(); };
+    syncBadgeEl.onclick = () => {
+      if (syncBadgeEl.dataset.mode === 'login') { location.hash = '#/mine'; return; }
+      toast('正在尝试连接云端…');
+      tryCloudSync();
+    };
     document.body.appendChild(syncBadgeEl);
   }
-  if (!USE_SUPABASE || !supaState().active) { syncBadgeEl.style.display = 'none'; return; }
+  if (!USE_SUPABASE) { syncBadgeEl.style.display = 'none'; return; }
+  if (!supaState().active) {
+    // v2.6.1：未登录明确可见，避免「以为在同步其实一直单机」
+    syncBadgeEl.style.display = '';
+    syncBadgeEl.textContent = '☁ 未登录 · 点我登录';
+    syncBadgeEl.dataset.mode = 'login';
+    return;
+  }
+  syncBadgeEl.dataset.mode = '';
   syncBadgeEl.style.display = '';
   if (mode === 'ok') syncBadgeEl.textContent = '☁ 已同步';
   else if (mode === 'sync') syncBadgeEl.textContent = '☁ 同步中…';
@@ -121,11 +133,13 @@ async function tryCloudSync() {
     const local = sanitizeTodos((await localSnapshot()).todos);
     const tombs = await getTombstones();
     for (const tb of tombs) { await CloudTodoRepository.deleteTodo(tb.id).catch(() => {}); }
+    let pushed = 0;
     for (const lt of local) {
       const ct = cloudTodos.find((c) => c.id === lt.id);
-      if (!ct) await CloudTodoRepository.createTodo(lt);
-      else if ((lt.updateTime || 0) > (ct.updateTime || 0)) await CloudTodoRepository.updateTodo(lt);
+      if (!ct) { await CloudTodoRepository.createTodo(lt); pushed++; }
+      else if ((lt.updateTime || 0) > (ct.updateTime || 0)) { await CloudTodoRepository.updateTodo(lt); pushed++; }
     }
+    if (pushed > 0) toast('已同步 ' + pushed + ' 条改动到云端');
     const fresh = sanitizeTodos(await CloudTodoRepository.getTodos());
     const freshIds = {};
     fresh.forEach((t) => { freshIds[t.id] = 1; });
