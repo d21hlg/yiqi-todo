@@ -117,18 +117,18 @@ body.no-tab #view { padding-bottom: 130px; }
   padding: 18px 16px 12px; min-height: 260px;
   box-shadow: 0 6px 20px rgba(125,180,135,.14);
 }
-.paper.ps-lines { background-image: repeating-linear-gradient(to bottom, transparent 0 31px, #e4f1e5 31px 32px); background-position: 0 28px; }
-.paper.ps-grid { background-image: linear-gradient(#e9f4ea 1px, transparent 1px), linear-gradient(90deg, #e9f4ea 1px, transparent 1px); background-size: 26px 26px; }
-.paper.ps-dots { background-image: radial-gradient(#d9ead9 1.6px, transparent 1.6px); background-size: 22px 22px; }
-.paper.tpl-travel-postcard { border: 3px dashed #c9b79c; }
-.paper.tpl-travel-seaside { background-color: #f0faff; border-color: #bcd9ee; }
-.paper.tpl-travel-ticket { border: 2px solid #ddd; border-radius: 6px; box-shadow: inset 0 0 0 4px #fff, inset 0 0 0 5px #e5e5e5; }
-.paper.tpl-border-floral { border: 3px double #f3c1d4; }
-.paper.tpl-border-vine { border: 3px double #bfe0c2; }
-.paper.tpl-border-vintage-frame { border: 4px double #c8b08a; }
-.paper.tpl-minimal-business { border: 1px solid #dcdcdc; border-radius: 4px; }
-.paper.tpl-pink-journal { background-image: linear-gradient(160deg, #fff6f9, #fdeef3); border-color: #f5d5e0; }
-.paper.ps-lines, .paper.ps-grid, .paper.ps-dots { background-color: #fffdfd; }
+.paper.ps-lines, .todo-page.ps-lines { background-image: repeating-linear-gradient(to bottom, transparent 0 31px, #e4f1e5 31px 32px); background-position: 0 28px; }
+.paper.ps-grid, .todo-page.ps-grid { background-image: linear-gradient(#e9f4ea 1px, transparent 1px), linear-gradient(90deg, #e9f4ea 1px, transparent 1px); background-size: 26px 26px; }
+.paper.ps-dots, .todo-page.ps-dots { background-image: radial-gradient(#d9ead9 1.6px, transparent 1.6px); background-size: 22px 22px; }
+.paper.tpl-travel-postcard, .todo-page.tpl-travel-postcard { border: 3px dashed #c9b79c; }
+.paper.tpl-travel-seaside, .todo-page.tpl-travel-seaside { background-color: #f0faff; border-color: #bcd9ee; }
+.paper.tpl-travel-ticket, .todo-page.tpl-travel-ticket { border: 2px solid #ddd; border-radius: 6px; box-shadow: inset 0 0 0 4px #fff, inset 0 0 0 5px #e5e5e5; }
+.paper.tpl-border-floral, .todo-page.tpl-border-floral { border: 3px double #f3c1d4; }
+.paper.tpl-border-vine, .todo-page.tpl-border-vine { border: 3px double #bfe0c2; }
+.paper.tpl-border-vintage-frame, .todo-page.tpl-border-vintage-frame { border: 4px double #c8b08a; }
+.paper.tpl-minimal-business, .todo-page.tpl-minimal-business { border: 1px solid #dcdcdc; border-radius: 4px; }
+.paper.tpl-pink-journal, .todo-page.tpl-pink-journal { background-image: linear-gradient(160deg, #fff6f9, #fdeef3); border-color: #f5d5e0; }
+.paper.ps-lines, .paper.ps-grid, .paper.ps-dots, .todo-page.ps-lines, .todo-page.ps-grid, .todo-page.ps-dots { background-color: #fffdfd; }
 
 /* 整篇标题 */
 .todo-title-input {
@@ -281,3 +281,53 @@ body.no-tab #view { padding-bottom: 130px; }
 .pcheck.circle.on { box-shadow: inset 0 0 0 3px #fff; }
 .pcheck.circle.on::after { display: none; }
 #pe-tools .tool-btn { margin-right: 8px; }
+
+/* ================= v2.3 ================= */
+.todo-page { padding: 14px; border-radius: 14px; box-sizing: border-box; margin-bottom: 12px; }
+.todo-page .paper { border: none; box-shadow: none; background: transparent; padding: 0; }
+.task-row.no-ctrl { gap: 0; }
+.task-row.no-ctrl .task-content { margin-left: 0; }
+.pe-readonly .task-content { cursor: default; }
+.pe-readonly .paper-add { display: none; }
+.todo-completed-label {
+  display: inline-flex; align-items: center; padding: 2px 8px; margin-right: 6px;
+  border-radius: 999px; background: rgba(127, 207, 145, 0.18); color: #4f8f61;
+  font-size: 12px; font-weight: 700; vertical-align: 2px;
+}
+.week-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 12px; }
+.week-chips .lbl { margin-right: 2px; }
+.chip-btn {
+  padding: 6px 12px; border-radius: 999px; border: 1px solid var(--line);
+  background: #fff; color: var(--text-2); font-size: 12px; cursor: pointer;
+}
+.chip-btn.on { border-color: var(--primary); background: var(--primary-soft); color: var(--primary-deep); font-weight: 700; }
+.tool-l1 { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 8px; }
+.tool-btn.l1 { border-radius: 999px; padding: 6px 14px; }
+.tool-btn.l1.on { background: var(--primary); color: #fff; border-color: var(--primary); }
+.tool-pan { border-top: 1px dashed var(--line); padding: 10px 2px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.tool-pan[hidden] { display: none; }
+.pan-lbl { width: 100%; font-size: 12px; color: var(--text-2); font-weight: 700; }
+.pan-slot { display: block; }
+.pan-slot .form-row { display: flex; gap: 8px; align-items: center; margin: 6px 0; flex-wrap: wrap; }
+.tpl-names { display: flex; flex-wrap: wrap; gap: 8px; width: 100%; }
+:root[data-theme="cream"] { --primary: #cbb59e; --primary-deep: #85735d; --primary-soft: #f3ece2; --bg: #faf7f2; --line: #e6dccb; }
+:root[data-theme="morandi-green"] { --primary: #9dc4a4; --primary-deep: #55745c; --primary-soft: #e9f0e9; --bg: #f4f7f4; --line: #d5e2d5; }
+:root[data-theme="haze-blue"] { --primary: #a9bcc9; --primary-deep: #5c7484; --primary-soft: #e8eef2; --bg: #f3f6f8; --line: #d3dfe6; }
+:root[data-theme="sakura"] { --primary: #d8b4bd; --primary-deep: #8f6570; --primary-soft: #f7ecef; --bg: #faf5f6; --line: #e8d5da; }
+:root[data-theme="milk-tea"] { --primary: #c4a98f; --primary-deep: #7d6752; --primary-soft: #f2e9df; --bg: #f8f4ef; --line: #e2d6c8; }
+:root[data-bg="cloud"] body {
+  background-image: radial-gradient(circle at 20% 15%, rgba(255,255,255,.9) 0 26px, transparent 27px),
+    radial-gradient(circle at 32% 12%, rgba(255,255,255,.8) 0 20px, transparent 21px),
+    radial-gradient(circle at 75% 60%, rgba(255,255,255,.7) 0 30px, transparent 31px);
+  background-size: 480px 320px; background-attachment: fixed;
+}
+:root[data-bg="star"] body {
+  background-image: radial-gradient(circle, rgba(255,214,112,.35) 0 2px, transparent 3px),
+    radial-gradient(circle, rgba(255,255,255,.8) 0 1.5px, transparent 2.5px);
+  background-size: 140px 120px, 90px 80px; background-attachment: fixed;
+}
+:root[data-bg="flower"] body {
+  background-image: radial-gradient(circle, rgba(216,180,189,.30) 0 3px, transparent 4px),
+    radial-gradient(circle, rgba(157,196,164,.25) 0 2px, transparent 3px);
+  background-size: 120px 110px, 70px 64px; background-attachment: fixed;
+}

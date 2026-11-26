@@ -100,7 +100,7 @@ export function segSig(s) {
 /** seg 片段 → CSS 字符串（done 行灰化+删除线） */
 export function segStyle(s, done) {
   const out = [];
-  out.push('font-size:' + (s.size === 1 ? '13px' : s.size === 2 ? '19px' : '15px'));
+  out.push('font-size:' + (s.size === 1 ? '13px' : s.size === 2 ? '19px' : s.size === 3 ? '24px' : '15px'));
   if (s.b) out.push('font-weight:700');
   if (s.i) out.push('font-style:italic');
   const deco = [];
@@ -190,7 +190,7 @@ export function titleStyleCss(st) {
   const out = [];
   out.push('color:' + (typeof s.c === 'string' && isHex(s.c) ? s.c : '#1f1f1f'));
   out.push('font-weight:' + (s.b === 0 ? '400' : '800'));
-  out.push('font-size:' + (s.size === 1 ? '20px' : s.size === 2 ? '32px' : '26px'));
+  out.push('font-size:' + (s.size === 1 ? '20px' : s.size === 2 ? '32px' : s.size === 3 ? '38px' : '26px'));
   if (s.i) out.push('font-style:italic');
   const deco = [];
   if (s.u) deco.push(s.u === 'double' ? 'underline double' : s.u === 'wavy' ? 'underline wavy' : 'underline');
@@ -327,4 +327,103 @@ export function mergeDuplicateDailyTodos(todos) {
     if (td._mergedFrom && td._mergedFrom.length > 1) td.isDone = isTodoCompleted(td.tasks);
   }
   return result;
+}
+
+/* ================= v2.3 新增纯函数 ================= */
+/* 进度实时计算：只统计带勾选框/圆圈的一二级 task；任何改动后调用即得最新值 */
+export function getTodoProgress(todo) {
+  const tasks = (todo && todo.tasks) || [];
+  const checkable = tasks.filter((t) => t && t.hasCheckbox !== false);
+  const total = checkable.length;
+  const done = checkable.filter((t) => t.completed).length;
+  return {
+    totalTasks: total,
+    completedTasks: done,
+    unfinishedTasks: total - done,
+    progressPercent: total === 0 ? 0 : Math.round((done / total) * 100)
+  };
+}
+export function hasUnfinishedCheckableTasks(todo) {
+  const c = ((todo && todo.tasks) || []).filter((t) => t && t.hasCheckbox !== false);
+  return c.length > 0 && c.some((t) => !t.completed);
+}
+/* 过去 7 天（不含今天）中有未完成可勾选任务的日期，倒序 */
+export function weekUnfinishedDates(todos, today) {
+  const out = [];
+  for (let i = 1; i <= 7; i++) {
+    const d = shiftDate(today, -i);
+    const doc = (todos || []).find((t) => t.moduleType === 'daily' && t.targetDate === d);
+    if (doc && hasUnfinishedCheckableTasks(doc)) {
+      out.push({ date: d, count: getTodoProgress(doc).unfinishedTasks });
+    }
+  }
+  return out;
+}
+export function fmtShortDate(d) {
+  const p = String(d || '').split('-');
+  return p.length === 3 ? Number(p[1]) + '.' + Number(p[2]) : String(d || '');
+}
+/* 专题排序：置顶优先（pinnedAt 倒序），其余按 updateTime 倒序 */
+export function sortTopicTodos(todos) {
+  return [...(todos || [])].sort((a, b) => {
+    const ap = a.isPinned ? 1 : 0, bp = b.isPinned ? 1 : 0;
+    if (ap !== bp) return bp - ap;
+    if (ap && bp) return String(b.pinnedAt || '').localeCompare(String(a.pinnedAt || ''));
+    return (b.updateTime || 0) - (a.updateTime || 0);
+  });
+}
+/* 主题：莫兰迪治愈系；背景：简单卡通（CSS 绘制，不影响阅读） */
+export const THEMES = [
+  { id: 'cream', name: '奶油白' },
+  { id: 'morandi-green', name: '莫兰迪绿' },
+  { id: 'haze-blue', name: '雾霾蓝' },
+  { id: 'sakura', name: '樱花粉' },
+  { id: 'milk-tea', name: '奶茶棕' }
+];
+export const THEME_BGS = [
+  { id: 'none', name: '无背景' },
+  { id: 'cloud', name: '云朵背景' },
+  { id: 'star', name: '小星星背景' },
+  { id: 'flower', name: '小花背景' }
+];
+/* 法定工作日：本地可配置日历（节假日/调休），无联网依赖 */
+export function defaultCalendar(year) {
+  return { year: year, holidays: [], extraWorkdays: [] };
+}
+export function isLegalWorkday(dateStr, cal) {
+  const c = cal || { holidays: [], extraWorkdays: [] };
+  const h = (c.holidays || []).map(String), x = (c.extraWorkdays || []).map(String);
+  if (h.includes(dateStr)) return false;
+  if (x.includes(dateStr)) return true;
+  const day = tsToDateStr ? new Date(dateStrToTsLocal(dateStr)).getDay() : 0;
+  return day !== 0 && day !== 6;
+}
+function dateStrToTsLocal(d) {
+  const p = String(d).split('-').map(Number);
+  return new Date(p[0], p[1] - 1, p[2]).getTime();
+}
+/* 规则在 [start,end] 区间内命中的日期列表 */
+export function datesForRule(rule, start, end, cal) {
+  const out = [];
+  if (!rule) return out;
+  let cur = start;
+  let guard = 0;
+  while (cur <= end && guard < 400) {
+    guard++;
+    if (rule.type === 'weekly') {
+      const p = cur.split('-').map(Number);
+      const wd = new Date(p[0], p[1] - 1, p[2]).getDay();
+      const norm = wd === 0 ? 7 : wd;
+      if ((rule.weekdays || []).includes(norm)) out.push(cur);
+    } else if (rule.type === 'legal-workday') {
+      if (isLegalWorkday(cur, cal)) out.push(cur);
+    } else if (rule.type === 'date-range') {
+      if (rule.startDate && rule.endDate && cur >= rule.startDate && cur <= rule.endDate) out.push(cur);
+    }
+    cur = shiftDate(cur, 1);
+  }
+  return out;
+}
+export function hasTaskFromRule(todo, ruleId) {
+  return ((todo && todo.tasks) || []).some((t) => t && t.sourceRuleId === ruleId);
 }

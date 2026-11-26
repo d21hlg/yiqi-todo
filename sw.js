@@ -3,7 +3,7 @@
  * - 页面导航：网络优先，失败回退缓存 index.html（离线壳）
  * - 静态资源：缓存优先，命中后台不刷新；未命中走网络并写缓存
  */
-const CACHE = 'yiqi-todo-v6';
+const CACHE = 'yiqi-todo-v7';
 const PRECACHE = [
   './',
   './index.html',

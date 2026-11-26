@@ -7,7 +7,7 @@
  */
 import { uuid, todayStr } from './util.js';
 import { USE_SUPABASE } from './config.js';
-import { supaState, getCloudUser, saveCloudUser, CloudTodoRepository } from './supabase-db.js';
+import { supaState, getCloudUser, saveCloudUser, CloudTodoRepository, CloudGroupRepository } from './supabase-db.js';
 
 /* 在线走云端、离线回本机（离线期间的改动回到在线后可用「上传本机数据到云端」补传；自动队列在 P3） */
 function useCloud() {
@@ -126,15 +126,29 @@ export async function uploadLocalToCloud() {
 }
 export { getAll as localGetAllTodos, del as localDelTodo };
 
-/* ---------- 群组（Web 端本地演示实现；字段与小程序一致，待接后端同步） ---------- */
+/* ---------- 通用 meta（视图偏好/主题/批量规则/日历） ---------- */
+export function getMeta(key, dflt) {
+  return getOne('meta', key).then((m) => (m && m.value !== undefined ? m.value : dflt));
+}
+export function setMeta(key, value) {
+  return put('meta', { key, value });
+}
+
+/* ---------- 群组：登录云端走 Supabase（跨设备），否则本机演示 ---------- */
 export const GroupRepository = {
-  getGroups: () => getAll('groups'),
-  getGroupById: (id) => getOne('groups', id).then((v) => v || null),
-  createGroup: (g) => put('groups', g),
-  deleteGroup: (id) => del('groups', id),
-  findByCode: async (code) => {
+  getGroups: () => (useCloud() ? CloudGroupRepository.getMyGroups() : getAll('groups')),
+  getGroupById: (id) => (useCloud() ? CloudGroupRepository.getGroupById(id) : getOne('groups', id).then((v) => v || null)),
+  createGroup: (g) => (useCloud() ? CloudGroupRepository.createGroup(g) : put('groups', g)),
+  deleteGroup: (id) => (useCloud() ? CloudGroupRepository.deleteGroup(id) : del('groups', id)),
+  findByCode: (code) => (useCloud()
+    ? CloudGroupRepository.findByCode(code)
+    : getAll('groups').then((all) => all.find((g) => g.inviteCode === String(code || '').trim().toUpperCase()) || null)),
+  joinByCode: async (code) => {
+    if (useCloud()) return CloudGroupRepository.joinByCode(code);
     const all = await getAll('groups');
-    return all.find((g) => g.inviteCode === String(code || '').trim().toUpperCase()) || null;
+    const g = all.find((x) => x.inviteCode === String(code || '').trim().toUpperCase());
+    if (!g) throw new Error('群组不存在：未登录云端时邀请码仅同机同浏览器有效；跨设备请先登录云端或在小程序端加入');
+    return `已找到并加入「${g.name}」（本地演示）`;
   }
 };
 

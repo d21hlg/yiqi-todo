@@ -9,8 +9,10 @@ import {
 } from './util.js';
 import { TodoRepository, GroupRepository, getLocalUser, saveLocalUser, newTodoDoc, exportAll, importAll, uploadLocalToCloud } from './db.js';
 import { USE_SUPABASE } from './config.js';
-import { initAuth, supaState, signInWithEmail, signOutCloud } from './supabase-db.js';
+import { initAuth, supaState, signInWithEmail, signOutCloud, verifyWithCode } from './supabase-db.js';
 import { createPaperEditor } from './paper.js';
+import { getTodoProgress, weekUnfinishedDates, fmtShortDate, sortTopicTodos, THEMES, THEME_BGS, datesForRule, hasTaskFromRule, defaultCalendar } from './util.js';
+import { getMeta, setMeta } from './db.js';
 
 const view = document.getElementById('view');
 const tabbar = document.getElementById('tabbar');
@@ -23,8 +25,31 @@ const state = {
   groups: [],
   daily: { date: todayStr(), viewMode: 'tasks', doc: null, editor: null, draftId: null, creating: false },
   filters: { selectedMonth: '', selectedDay: '', selectedCategoryId: null, keyword: '' },
-  edit: null // { doc, isNew, editor, saveTimer, dirty }
+  edit: null, // { doc, isNew, editor, saveTimer, dirty }
+  pref: { dailyMode: 'tasks', cateMode: 'expanded', lastCateTodoId: '' }, // 专题默认放大版（记忆上次浏览；无记录自动回缩小版）
+  theme: { themeId: 'morandi-green', bgId: 'none' },
+  bulkRules: [],
+  workdayCal: null,
+  cate: { doc: null, editor: null }
 };
+
+/* ---------- v2.3 主题 / 偏好 ---------- */
+function applyTheme() {
+  const t = state.theme || { themeId: 'cream', bgId: 'none' };
+  document.documentElement.setAttribute('data-theme', t.themeId || 'cream');
+  document.documentElement.setAttribute('data-bg', t.bgId || 'none');
+}
+async function loadPrefs() {
+  const [pref, theme, rules, cal] = await Promise.all([
+    getMeta('viewPref', null), getMeta('theme', null), getMeta('bulkRules', null), getMeta('workdayCal', null)
+  ]);
+  if (pref) state.pref = Object.assign(state.pref, pref);
+  if (theme) state.theme = Object.assign(state.theme, theme);
+  if (rules) state.bulkRules = rules;
+  state.workdayCal = cal || defaultCalendar(new Date().getFullYear());
+  state.daily.viewMode = state.pref.dailyMode === 'compact' ? 'compact' : 'tasks';
+  applyTheme();
+}
 
 function toast(msg) {
   toastEl.textContent = msg;
@@ -53,15 +78,18 @@ function parseHash() {
 }
 
 async function render() {
+  const { parts, params } = parseHash();
   flushEditSave();
   flushDailySave();
-  cleanupDailyDraft();
+  flushCateSave();
+  // v2.3：首页只读后「＋添加任务」= 创建草稿并跳编辑页；正在编辑该草稿时不回收
+  const editingDraft = parts[0] === 'edit' && state.daily.draftId && parts[1] === state.daily.draftId;
+  if (!editingDraft) cleanupDailyDraft();
   if (state.edit && state.edit.editor) { state.edit.editor.destroy(); state.edit.editor = null; }
   destroyDailyEditor();
   state.edit = null;
   await reloadAll();
 
-  const { parts, params } = parseHash();
   const route = parts[0] || 'daily';
   document.querySelectorAll('#tabbar a').forEach((a) => {
     a.classList.toggle('active', a.dataset.tab === route);
@@ -82,11 +110,12 @@ window.addEventListener('hashchange', render);
 function todoCardHtml(todo) {
   const st = tasksStat(todo.tasks);
   const badges = [];
+  if (todo.isPinned) badges.push('<span class="badge share">置顶</span>');
   if (todo.isShared) badges.push('<span class="badge share">共享</span>');
   if (todo.isDone) badges.push('<span class="badge done">已完成</span>');
   const cat = todo.moduleType === 'categorized' && todo.categoryId ? `<span>${esc(todo.categoryName || '')}</span>` : '';
   return `<div class="card todo-card" data-id="${todo.id}">
-    <div class="title">${esc(getTodoTitlePreview(todo, 24))}</div>
+    <div class="title">${isTodoCompleted(todo) ? '<span class="todo-completed-label">【已完成】</span>' : ''}${esc(getTodoTitlePreview(todo, 24))}</div>
     <div class="meta">
       ${badges.join('')}
       ${cat}
@@ -166,7 +195,7 @@ async function createDailyDoc() {
     await TodoRepository.createTodo(doc);
     state.todos.push(doc);
     state.daily.draftId = doc.id; // 始终没输入内容则离开时回收，保证不留空 Todo
-    renderDaily();
+    return doc;
   } finally {
     state.daily.creating = false;
   }
@@ -225,27 +254,40 @@ function cleanupDailyDraft() {
   }
 }
 
+function updateProgressDom(prefix, tasks) {
+  const p = getTodoProgress({ tasks });
+  const pct = document.getElementById(prefix + '-pct');
+  if (!pct) return;
+  pct.textContent = p.progressPercent + '%';
+  const st = document.getElementById(prefix + '-stat');
+  if (st) st.textContent = p.completedTasks + ' / ' + p.totalTasks + ' 项带勾选框任务';
+  const fl = document.getElementById(prefix + '-fill');
+  if (fl) fl.style.width = p.progressPercent + '%';
+}
+
 function renderDaily() {
   const d = state.daily.date;
   const info = dayInfo(d);
   const isToday = d === todayStr();
   document.body.classList.remove('editing');
+  destroyCateEditor();
 
   const allDaily = state.todos.filter((t) => t.moduleType === 'daily');
   const mergedAll = mergeDuplicateDailyTodos(allDaily);
   const dayTodo = getDailyTodoByDate(mergedAll, d);
   if (dayTodo && dayTodo._mergedFrom) delete dayTodo._mergedFrom;
   const compactList = mergedAll.filter(dailyHasContent).map((t) => {
-    const s = tasksStat(t.tasks || []);
+    const s = getTodoProgress(t);
     return {
       id: t.id,
       title: (t.title || '').trim() || formatDailyTodoTitle(t.targetDate),
       date: t.targetDate,
-      done: s.done, total: s.total,
-      percent: s.total ? Math.round((s.done / s.total) * 100) : 0
+      done: s.completedTasks, total: s.totalTasks, percent: s.progressPercent,
+      doneAll: isTodoCompleted(t)
     };
   }).sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
-  const stat = dayTodo ? tasksStat(dayTodo.tasks || []) : { total: 0, done: 0, percent: 0 };
+  const stat = dayTodo ? getTodoProgress(dayTodo) : null;
+  const week = weekUnfinishedDates(state.todos, todayStr());
 
   const head = `
     <div class="date-head">
@@ -260,69 +302,125 @@ function renderDaily() {
       <div class="spacer"></div>
       <button class="btn" id="d-mode">${state.daily.viewMode === 'tasks' ? '切换为缩小版' : '切换为展开视图'}</button>
     </div>`;
+  const weekRow = week.length ? `
+    <div class="card week-chips">
+      <span class="lbl">过去一周还有未完成：</span>
+      ${week.map((w) => `<button class="chip-btn" data-wdate="${w.date}">${fmtShortDate(w.date)}　${w.count} 项未完成</button>`).join('')}
+    </div>` : '';
 
   if (state.daily.viewMode === 'compact') {
     destroyDailyEditor();
-    view.innerHTML = head + `
+    view.innerHTML = head + weekRow + `
       <div id="d-compact">
         ${compactList.length ? compactList.map((c) => `
         <div class="card daily-compact-card" data-date="${esc(c.date)}">
           <div class="dcc-row">
-            <span class="dcc-title">${esc(c.title)}</span>
+            <span class="dcc-title">${c.doneAll ? '<span class="todo-completed-label">【已完成】</span>' : ''}${esc(c.title)}</span>
             <span class="dcc-stat">完成 ${c.done} / ${c.total} · ${c.percent}%</span>
           </div>
           <div class="progress-track"><div class="progress-fill" style="width:${c.percent}%"></div></div>
         </div>`).join('') : '<div class="empty">还没有带任务的每日 Todo，切回展开视图添加第一条任务</div>'}
       </div>`;
     bindDailyHead(d);
+    bindWeekChips();
     document.getElementById('d-compact').addEventListener('click', (e) => {
       const card = e.target.closest('.daily-compact-card');
       if (!card) return;
       state.daily.date = card.dataset.date;
       state.daily.viewMode = 'tasks';
+      state.pref.dailyMode = 'tasks';
+      setMeta('viewPref', state.pref);
       renderDaily();
     });
     persistDailyMerge();
     return;
   }
 
-  /* 展开视图（默认）：不显示 Todo 卡片，直接显示当天这一篇的一条条 task */
-  view.innerHTML = head + `
-    ${dayTodo && stat.total ? `<div class="card progress-card mini-progress">
-      <div class="row"><span class="pct">${stat.percent}%</span><div class="spacer"></div>
-      <span>${stat.done} / ${stat.total} 项带勾选框任务</span></div>
-      <div class="progress-track"><div class="progress-fill" style="width:${stat.percent}%"></div></div>
-    </div>` : ''}
-    ${dayTodo ? `<div id="daily-mount"></div>
-      <div class="daily-open-row"><a class="btn sm" href="#/edit/${dayTodo.id}">模板 / 共享设置 ›</a></div>`
-    : `<div class="empty" id="daily-empty">
-        <div>${isToday ? '今日还没有任务' : '这一天还没有任务'}</div>
-        <div class="t-mut">添加第一条任务时才会创建当天 Todo（标题自动为 ${esc(formatDailyTodoTitle(d))}；查看日期不会创建空 Todo）</div>
-        <button class="btn primary" id="d-add-first">＋ 添加任务</button>
-      </div>`}`;
+  /* 展开视图：只读 task list（可勾选），编辑能力点「修改 ›」进入 */
+  view.innerHTML = head + weekRow + `
+    <div class="todo-page ${dayTodo ? paperClassOf(dayTodo.templateId) : ''}" id="d-page">
+      <div class="card progress-card mini-progress" id="d-progcard" ${dayTodo ? '' : 'hidden'}>
+        <div class="row"><span class="pct" id="d-pct">${stat ? stat.progressPercent : 0}%</span><div class="spacer"></div>
+        <span id="d-stat">${stat ? stat.completedTasks + ' / ' + stat.totalTasks : '0 / 0'} 项带勾选框任务</span></div>
+        <div class="progress-track"><div class="progress-fill" id="d-fill" style="width:${stat ? stat.progressPercent : 0}%"></div></div>
+      </div>
+      ${dayTodo ? `<div id="daily-mount"></div>
+        <div class="daily-open-row"><a class="btn sm" href="#/edit/${dayTodo.id}">修改 / 模板 / 共享 ›</a></div>`
+      : `<div class="empty" id="daily-empty">
+          <div>${isToday ? '今日还没有任务' : '这一天还没有任务'}</div>
+          <div class="t-mut">添加第一条任务时才会创建当天 Todo（标题自动为 ${esc(formatDailyTodoTitle(d))}；查看日期不会创建空 Todo）</div>
+          <button class="btn primary" id="d-add-first">＋ 添加任务</button>
+        </div>`}
+    </div>`;
 
   bindDailyHead(d);
+  bindWeekChips();
   persistDailyMerge();
 
   const addBtn = document.getElementById('d-add-first');
   if (addBtn) {
-    addBtn.onclick = () => createDailyDoc();
+    addBtn.onclick = async () => {
+      const doc = await createDailyDoc(); // 懒创建当天唯一一篇
+      if (doc && doc.id) location.hash = '#/edit/' + doc.id; // 首页只读 → 跳转编辑
+      else renderDaily();
+    };
     destroyDailyEditor();
     return;
   }
 
-  // 同一天同一篇且编辑器已挂载 → 保活，避免输入中重建丢光标
   if (state.daily.editor && dailySave && dailySave.doc && dailySave.doc.id === dayTodo.id) return;
   destroyDailyEditor();
   state.daily.editor = createPaperEditor({
     mount: document.getElementById('daily-mount'),
-    hideTitle: true, // daily 标题由系统固定为日期，不展示标题输入
-    paperClass: paperClassOf(dayTodo.templateId),
+    hideTitle: true,
+    editable: false, // v2.3：首页预览只读（勾选除外），编辑栏不出现
+    paperClass: '', // 模板样式由整页容器 .todo-page 承载，避免双层背景
     initial: { title: '', titleStyle: null, tasks: dayTodo.tasks || [] },
-    onChange: () => scheduleDailySave()
+    onChange: (payload) => { updateProgressDom('d', payload.tasks); scheduleDailySave(); }
   });
   dailySave = { timer: 0, dirty: false, doc: dayTodo, editor: state.daily.editor };
   window.__flushDailySave = flushDailySave;
+}
+
+function bindWeekChips() {
+  view.querySelectorAll('[data-wdate]').forEach((b) => {
+    b.onclick = () => {
+      flushDailySave();
+      cleanupDailyDraft();
+      state.daily.date = b.dataset.wdate;
+      state.daily.viewMode = 'tasks';
+      state.pref.dailyMode = 'tasks';
+      setMeta('viewPref', state.pref);
+      renderDaily();
+    };
+  });
+}
+
+/* ---------- 专题放大版自动保存 ---------- */
+let cateSave = null;
+function scheduleCateSave() {
+  if (!cateSave) return;
+  cateSave.dirty = true;
+  clearTimeout(cateSave.timer);
+  cateSave.timer = setTimeout(flushCateSave, 700);
+}
+async function flushCateSave() {
+  if (!cateSave || !cateSave.dirty) return;
+  cateSave.dirty = false;
+  const doc = cateSave.doc;
+  const payload = cateSave.editor.getPayload();
+  doc.tasks = normalizeTasks(payload.tasks);
+  doc.isDone = isTodoCompleted(doc.tasks);
+  doc.updateTime = Date.now();
+  doc.lastEditedBy = state.user.ownerId;
+  doc.lastEditedByName = state.user.nickName;
+  try { await TodoRepository.updateTodo(doc); } catch (e) { toast('保存失败：' + e.message); }
+}
+function destroyCateEditor() {
+  if (cateSave) { clearTimeout(cateSave.timer); if (cateSave.editor) cateSave.editor.destroy(); }
+  cateSave = null;
+  state.cate.doc = null;
+  state.cate.editor = null;
 }
 
 function bindDailyHead(d) {
@@ -341,14 +439,20 @@ function bindDailyHead(d) {
     flushDailySave();
     cleanupDailyDraft();
     state.daily.viewMode = state.daily.viewMode === 'tasks' ? 'compact' : 'tasks';
+    state.pref.dailyMode = state.daily.viewMode;
+    setMeta('viewPref', state.pref);
     renderDaily();
   };
 }
 
 function renderCate() {
   document.body.classList.remove('editing');
+  destroyDailyEditor();
+  destroyCateEditor();
   const opts = categoryOptions(state.user.customCategories);
   const f = state.filters;
+  const mode = state.pref.cateMode === 'expanded' ? 'expanded' : 'compact';
+
   view.innerHTML = `
     <div class="card">
       <div class="row" style="flex-wrap:wrap">
@@ -369,33 +473,102 @@ function renderCate() {
         <input class="cat-input" id="f-kw" placeholder="关键词搜索" value="${esc(f.keyword)}" style="flex:1" />
         <button class="btn ghost" id="f-reset">重置筛选</button>
         <div class="spacer"></div>
+        <button class="btn" id="f-mode">${mode === 'compact' ? '切换为放大版' : '切换为缩小版'}</button>
         <button class="btn" id="f-new">＋ 新建</button>
       </div>
     </div>
-    <div id="c-list"></div>`;
+    <div id="c-body"></div>`;
 
   const monthEl = document.getElementById('f-month');
   const dayEl = document.getElementById('f-day');
   const catEl = document.getElementById('f-cat');
   const kwEl = document.getElementById('f-kw');
 
-  function updateList() {
+  function filteredList() {
     const month = monthEl.value;
     const day = dayEl.value;
     const selectedDate = month && day ? `${month}-${day}` : '';
     const catId = catEl.value === '' ? null : Number(catEl.value);
-    const list = filterTodos(
+    return filterTodos(
       state.todos.filter((t) => t.moduleType === 'categorized'),
       { selectedMonth: month, selectedDate, selectedCategoryId: catId, keyword: kwEl.value }
-    ).sort((a, b) => (b.updateTime || 0) - (a.updateTime || 0));
-    document.getElementById('c-list').innerHTML = list.length
-      ? list.map(todoCardHtml).join('')
-      : '<div class="empty">没有符合条件的专题 Todo（专题不记录开始/结束日，只按创建与修改时间管理）</div>';
+    );
+  }
+
+  function updateList() {
+    const body = document.getElementById('c-body');
+    const list = filteredList();
+    if (mode === 'compact') {
+      const sorted = sortTopicTodos(list);
+      body.innerHTML = sorted.length
+        ? sorted.map(todoCardHtml).join('')
+        : '<div class="empty">没有符合条件的专题 Todo（专题不记录开始/结束日，只按创建与修改时间管理）</div>';
+      body.onclick = (e) => {
+        const card = e.target.closest('.todo-card');
+        if (!card) return;
+        state.pref.lastCateTodoId = card.dataset.id;
+        state.pref.cateMode = 'expanded';
+        setMeta('viewPref', state.pref);
+        renderCate();
+      };
+      return;
+    }
+    /* 放大版：默认打开上一次浏览的专题 Todo */
+    let doc = state.todos.find((t) => t.id === state.pref.lastCateTodoId && t.moduleType === 'categorized');
+    if (!doc || (list.length && !list.some((t) => t.id === doc.id))) doc = list[0];
+    if (!doc) {
+      state.pref.cateMode = 'compact';
+      setMeta('viewPref', state.pref);
+      updateList();
+      return;
+    }
+    const stat = getTodoProgress(doc);
+    body.innerHTML = `
+      <div class="card row" style="flex-wrap:wrap">
+        <b>${doc.isPinned ? '<span class="badge share">置顶</span>' : ''}${esc(getTodoTitlePreview(doc, 30))}</b>
+        <div class="spacer"></div>
+        <select id="c-pick" class="cat-input" style="max-width:40%">
+          ${sortTopicTodos(list).map((t) => `<option value="${t.id}" ${t.id === doc.id ? 'selected' : ''}>${esc(getTodoTitlePreview(t, 18))}</option>`).join('')}
+        </select>
+        <button class="btn sm" id="c-pin">${doc.isPinned ? '取消置顶' : '置顶'}</button>
+        <a class="btn sm" href="#/edit/${doc.id}">修改 / 模板 / 共享 ›</a>
+      </div>
+      <div class="todo-page ${paperClassOf(doc.templateId)}" id="c-page">
+        <div class="card progress-card mini-progress">
+          <div class="row"><span class="pct" id="c-pct">${stat.progressPercent}%</span><div class="spacer"></div>
+          <span id="c-stat">${stat.completedTasks} / ${stat.totalTasks} 项带勾选框任务</span></div>
+          <div class="progress-track"><div class="progress-fill" id="c-fill" style="width:${stat.progressPercent}%"></div></div>
+        </div>
+        <div id="cate-mount"></div>
+      </div>`;
+    document.getElementById('c-pick').onchange = (e) => {
+      state.pref.lastCateTodoId = e.target.value;
+      setMeta('viewPref', state.pref);
+      renderCate();
+    };
+    document.getElementById('c-pin').onclick = async () => {
+      doc.isPinned = !doc.isPinned;
+      doc.pinnedAt = doc.isPinned ? new Date().toISOString() : '';
+      doc.updateTime = Date.now();
+      await TodoRepository.updateTodo(doc);
+      toast(doc.isPinned ? '已置顶' : '已取消置顶');
+      renderCate();
+    };
+    const editor = createPaperEditor({
+      mount: document.getElementById('cate-mount'),
+      hideTitle: true,
+      editable: false,
+      paperClass: '',
+      initial: { title: '', titleStyle: null, tasks: doc.tasks || [] },
+      onChange: (payload) => { updateProgressDom('c', payload.tasks); scheduleCateSave(); }
+    });
+    cateSave = { timer: 0, dirty: false, doc, editor };
+    state.cate.doc = doc;
+    state.cate.editor = editor;
   }
 
   monthEl.onchange = () => {
     state.filters.selectedMonth = monthEl.value;
-    // 月份变化时重建「日」下拉
     const n = monthEl.value ? daysInMonth(monthEl.value) : 31;
     dayEl.innerHTML = '<option value="">不限</option>' + Array.from({ length: n }, (_, i) => `<option value="${String(i + 1).padStart(2, '0')}">${i + 1} 日</option>`).join('');
     state.filters.selectedDay = '';
@@ -408,9 +581,103 @@ function renderCate() {
     state.filters = { selectedMonth: '', selectedDay: '', selectedCategoryId: null, keyword: '' };
     renderCate();
   };
+  document.getElementById('f-mode').onclick = () => {
+    flushCateSave();
+    state.pref.cateMode = mode === 'compact' ? 'expanded' : 'compact';
+    setMeta('viewPref', state.pref);
+    renderCate();
+  };
   document.getElementById('f-new').onclick = () => { location.hash = '#/edit/new?module=categorized'; };
-  bindCards(document.getElementById('c-list'));
   updateList();
+}
+
+/* ================= 批量添加（规则 → 每日 Todo） ================= */
+function renderBulkPanel(slot) {
+  const cal = state.workdayCal || defaultCalendar(new Date().getFullYear());
+  const wdNames = ['', '周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+  slot.innerHTML = `
+    <div class="pan-lbl">批量添加（按规则写入每日 Todo）</div>
+    <div class="form-row"><input class="cat-input" id="bk-text" placeholder="任务文字，如：早上吃药" /></div>
+    <div class="form-row">
+      <select id="bk-type" class="cat-input">
+        <option value="weekly">每周几</option>
+        <option value="legal-workday">法定工作日</option>
+        <option value="date-range">指定日期范围</option>
+      </select>
+    </div>
+    <div class="form-row" id="bk-wdrow">${[1, 2, 3, 4, 5, 6, 7].map((i) => `<span class="chip-btn" data-wd="${i}">${wdNames[i]}</span>`).join('')}</div>
+    <div class="form-row" id="bk-rangerow" hidden>
+      <input type="date" id="bk-start" value="${todayStr()}" />
+      <input type="date" id="bk-end" value="${shiftDate(todayStr(), 30)}" />
+    </div>
+    <div class="form-row"><label class="t-mut"><input type="checkbox" id="bk-check" checked /> 带勾选框（参与完成统计）</label></div>
+    <div class="form-row"><button class="btn primary" id="bk-run">生成到每日 Todo</button></div>
+    <div class="pan-lbl" style="margin-top:10px">法定节假日日历（本地配置，可调休）</div>
+    <div class="form-row"><textarea class="cat-input" id="bk-hol" rows="2" placeholder="节假日，逗号分隔：2026-01-01,2026-01-02">${(cal.holidays || []).join(',')}</textarea></div>
+    <div class="form-row"><textarea class="cat-input" id="bk-extra" rows="2" placeholder="调休上班日，逗号分隔">${(cal.extraWorkdays || []).join(',')}</textarea></div>
+    <div class="form-row"><button class="btn ghost" id="bk-cal">保存日历</button></div>
+    ${state.bulkRules.length ? `<div class="pan-lbl" style="margin-top:10px">已有规则</div>` + state.bulkRules.map((r) => `<div class="form-row t-mut">${esc(r.taskText)} · ${r.type === 'weekly' ? '每周' + (r.weekdays || []).map((w) => wdNames[w]).join('/') : r.type === 'legal-workday' ? '法定工作日' : esc(r.startDate || '') + '~' + esc(r.endDate || '')}<div class="spacer"></div><button class="btn ghost sm" data-bkdel="${r.id}">删除</button></div>`).join('') : ''}
+    <div class="form-row" style="margin-top:10px"><a class="btn ghost" href="#/mine">主题设置 ›</a></div>`;
+  const typeEl = slot.querySelector('#bk-type');
+  const syncRows = () => {
+    slot.querySelector('#bk-wdrow').hidden = typeEl.value !== 'weekly';
+    slot.querySelector('#bk-rangerow').hidden = typeEl.value !== 'date-range';
+  };
+  typeEl.onchange = syncRows;
+  syncRows();
+  slot.querySelectorAll('[data-wd]').forEach((c) => { c.onclick = () => c.classList.toggle('on'); });
+  slot.querySelector('#bk-cal').onclick = () => {
+    const parse = (v) => String(v || '').split(/[,，\s]+/).map((x) => x.trim()).filter(Boolean);
+    state.workdayCal = Object.assign({}, cal, { holidays: parse(slot.querySelector('#bk-hol').value), extraWorkdays: parse(slot.querySelector('#bk-extra').value) });
+    setMeta('workdayCal', state.workdayCal);
+    toast('日历已保存');
+  };
+  slot.querySelector('#bk-run').onclick = async () => {
+    const text = slot.querySelector('#bk-text').value.trim();
+    if (!text) { toast('请输入任务文字'); return; }
+    const rule = {
+      id: uid('r'),
+      type: typeEl.value,
+      taskText: text,
+      weekdays: Array.from(slot.querySelectorAll('[data-wd].on')).map((c) => Number(c.dataset.wd)),
+      startDate: slot.querySelector('#bk-start').value,
+      endDate: slot.querySelector('#bk-end').value,
+      hasCheckbox: slot.querySelector('#bk-check').checked,
+      createdAt: Date.now()
+    };
+    if (rule.type === 'weekly' && !rule.weekdays.length) { toast('请至少选择一个星期几'); return; }
+    const start = rule.type === 'date-range' ? (rule.startDate || todayStr()) : todayStr();
+    const end = rule.type === 'date-range' ? (rule.endDate || todayStr()) : shiftDate(todayStr(), 30);
+    const dates = datesForRule(rule, start, end, state.workdayCal);
+    let added = 0, skipped = 0;
+    for (const date of dates) {
+      let todo = state.todos.find((t) => t.moduleType === 'daily' && t.targetDate === date);
+      if (!todo) {
+        todo = newTodoDoc({ moduleType: 'daily', targetDate: date, title: formatDailyTodoTitle(date), titleCustom: true, templateId: getDefaultTemplateByCategory(1), tasks: [] }, state.user);
+        await TodoRepository.createTodo(todo);
+        state.todos.push(todo);
+      }
+      if (hasTaskFromRule(todo, rule.id)) { skipped++; continue; }
+      todo.tasks = normalizeTasks(todo.tasks).concat([{ id: uid('t'), text, completed: false, hasCheckbox: rule.hasCheckbox, level: 1, sourceRuleId: rule.id }]);
+      todo.isDone = isTodoCompleted(todo.tasks);
+      todo.updateTime = Date.now();
+      todo.lastEditedBy = state.user.ownerId;
+      todo.lastEditedByName = state.user.nickName;
+      await TodoRepository.updateTodo(todo);
+      added++;
+    }
+    state.bulkRules.push(rule);
+    setMeta('bulkRules', state.bulkRules);
+    toast(`已生成 ${added} 条任务${skipped ? '，跳过重复 ' + skipped + ' 条' : ''}`);
+    renderBulkPanel(slot);
+  };
+  slot.querySelectorAll('[data-bkdel]').forEach((b) => {
+    b.onclick = () => {
+      state.bulkRules = state.bulkRules.filter((r) => r.id !== b.dataset.bkdel);
+      setMeta('bulkRules', state.bulkRules);
+      renderBulkPanel(slot);
+    };
+  });
 }
 
 /* ================= 编辑页（详情即编辑，自动保存） ================= */
@@ -468,21 +735,7 @@ async function renderEdit(idOrNew, params) {
             </select>
             <span class="t-mut">专题不填开始/结束日，只自动记录创建与修改时间</span>
           </div>
-          <div class="form-row">
-            <span class="lbl">模板</span>
-            <div class="tpl-grid" id="e-tpl">
-              ${TODO_TEMPLATES.map((t) => `<div class="tpl-item ${doc.templateId === t.id ? 'active' : ''}" data-id="${t.id}"><div class="mini-paper paper ${t.cls} ps-${t.paper}" style="padding:0"></div>${esc(t.name)}</div>`).join('')}
-            </div>
-          </div>
-          <div class="form-row">
-            <span class="lbl">共享</span>
-            <div class="switch ${doc.isShared ? 'on' : ''}" id="e-share"></div>
-            <select id="e-group" ${doc.isShared ? '' : 'disabled'}>
-              <option value="">选择群组…</option>
-              ${state.groups.map((g) => `<option value="${g.id}" ${doc.groupId === g.id ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}
-            </select>
-          </div>
-          ${!state.groups.length ? '<div class="t-mut">还没有群组，去「群组」页创建一个（网页端群组为本地演示，跨端共享请在小程序内完成）</div>' : ''}
+          ${!isNew ? `<div class="form-row"><button class="btn ghost" id="e-pin">${doc.isPinned ? '取消置顶' : '置顶（专题缩小版顶部）'}</button></div>` : ''}
           <div class="form-row">
             <span class="t-mut">创建 ${esc(fmtMinute(doc.createTime))} · 最近修改 ${esc(fmtMinute(doc.updateTime))}${doc.lastEditedByName ? ' · 最近由 ' + esc(doc.lastEditedByName) : ''}</span>
           </div>
@@ -492,15 +745,54 @@ async function renderEdit(idOrNew, params) {
     </div>`;
 
   state.edit = { doc, isNew, editor: null, saveTimer: null, dirty: false };
+  // v2.3：模板/共享改由编辑工具面板维护（与编辑工具同级）
+  const cur = { templateId: doc.templateId || 'plain-paper', isShared: !!doc.isShared, groupId: doc.groupId || '' };
 
+
+  function wrapPageClass() {
+    /* 编辑页模板由纸张自身承载；整页覆盖只作用于今日/专题放大版容器 */
+    const main = document.querySelector('.edit-main');
+    if (main) main.className = 'edit-main';
+  }
 
   const editor = createPaperEditor({
     mount: document.getElementById('pe-mount'),
     initial: { title: isNew ? '' : (doc.titleCustom ? (doc.title || '') : ''), titleStyle: doc.titleStyle, tasks: doc.tasks },
     paperClass: paperClassOf(doc.templateId),
-    onChange: () => { state.edit.dirty = true; scheduleAutoSave(); }
+    onChange: () => { state.edit.dirty = true; scheduleAutoSave(); },
+    onPanelOpen: (id, slot) => {
+      if (id === 'tpl') {
+        slot.innerHTML = `<div class="pan-lbl">模板（仅名称）</div>
+          <div class="tpl-names">${TODO_TEMPLATES.map((t) => `<button class="chip-btn ${cur.templateId === t.id ? 'on' : ''}" data-tpl="${t.id}">${esc(t.name)}</button>`).join('')}</div>`;
+        slot.onclick = (e) => {
+          const b = e.target.closest('[data-tpl]');
+          if (!b) return;
+          cur.templateId = b.dataset.tpl;
+          editor.setPaperAppearance(paperClassOf(cur.templateId));
+          wrapPageClass();
+          slot.querySelectorAll('[data-tpl]').forEach((x) => x.classList.toggle('on', x === b));
+          state.edit.dirty = true;
+          scheduleAutoSave();
+        };
+      } else if (id === 'share') {
+        slot.innerHTML = `<div class="pan-lbl">共享设置</div>
+          <div class="form-row"><span class="lbl">是否共享</span><div class="switch ${cur.isShared ? 'on' : ''}" id="p-share"></div></div>
+          <div class="form-row"><select id="p-group" ${cur.isShared ? '' : 'disabled'}>
+            <option value="">选择群组…</option>
+            ${state.groups.map((g) => `<option value="${g.id}" ${cur.groupId === g.id ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}
+          </select></div>
+          ${!state.groups.length ? '<div class="t-mut">还没有群组：登录云端后在「群组」页创建即可跨设备共享</div>' : '<div class="t-mut">共享后群组成员可查看并协同编辑任务内容</div>'}`;
+        const sw = slot.querySelector('#p-share');
+        const gp = slot.querySelector('#p-group');
+        sw.onclick = () => { cur.isShared = !cur.isShared; sw.classList.toggle('on', cur.isShared); gp.disabled = !cur.isShared; state.edit.dirty = true; scheduleAutoSave(); };
+        gp.onchange = () => { cur.groupId = gp.value; state.edit.dirty = true; scheduleAutoSave(); };
+      } else if (id === 'more') {
+        renderBulkPanel(slot);
+      }
+    }
   });
   state.edit.editor = editor;
+  wrapPageClass();
 
   // 桌面端把「编辑工具」模块移到右侧栏（移动端保持在纸张下方）
   const toolsEl = document.getElementById('pe-tools');
@@ -513,17 +805,24 @@ async function renderEdit(idOrNew, params) {
   window.addEventListener('resize', placeTools);
   state.edit.cleanupResize = () => window.removeEventListener('resize', placeTools);
 
+  const pinBtn = document.getElementById('e-pin');
+  if (pinBtn) pinBtn.onclick = async () => {
+    doc.isPinned = !doc.isPinned;
+    doc.pinnedAt = doc.isPinned ? new Date().toISOString() : '';
+    state.edit.dirty = true;
+    await saveNow('silent');
+    pinBtn.textContent = doc.isPinned ? '取消置顶' : '置顶（专题缩小版顶部）';
+    toast(doc.isPinned ? '已置顶' : '已取消置顶');
+  };
+
   function collectSettings() {
     const moduleType = document.querySelector('#e-module .seg.active').dataset.m;
     const targetDate = moduleType === 'daily' ? (document.getElementById('e-date').value || todayStr()) : '';
     const categoryId = moduleType === 'daily' ? 1 : Number(document.getElementById('e-cat').value || 0);
     const categoryName = moduleType === 'daily' ? PRESET_CATEGORIES[1]
       : (categoryOptions(state.user.customCategories).find((o) => o.id === categoryId) || { name: '未分类' }).name;
-    const tplId = (document.querySelector('#e-tpl .tpl-item.active') || {}).dataset;
-    const templateId = tplId ? tplId.id : doc.templateId;
-    const isShared = document.getElementById('e-share').classList.contains('on');
-    const groupId = isShared ? document.getElementById('e-group').value : '';
-    return { moduleType, targetDate, categoryId, categoryName, templateId, isShared, groupId };
+    return { moduleType, targetDate, categoryId, categoryName,
+      templateId: cur.templateId, isShared: cur.isShared && !!cur.groupId ? true : !!cur.groupId, groupId: cur.groupId };
   }
 
   function buildDoc() {
@@ -638,13 +937,19 @@ function flushEditSave() {
   if (window.__flushEditSave) window.__flushEditSave();
   if (state.edit && state.edit.cleanupResize) state.edit.cleanupResize();
 }
-window.addEventListener('beforeunload', () => { flushEditSave(); flushDailySave(); cleanupDailyDraft(); });
+window.addEventListener('beforeunload', () => { flushEditSave(); flushDailySave(); flushCateSave(); cleanupDailyDraft(); });
 
 /* ================= 群组（本地演示，字段与小程序一致） ================= */
 function renderGroups() {
   document.body.classList.remove('editing');
+  destroyCateEditor();
+  const cloud = USE_SUPABASE && supaState().active;
   view.innerHTML = `
-    <div class="hint-card">网页端群组数据保存在本机浏览器（IndexedDB），用于共享开关与字段联调；跨设备真实群组成员与协同请在微信小程序端使用（两端字段 isShared / groupId / ownerId / lastEditedBy 完全一致）。</div>
+    <div class="hint-card">${cloud
+      ? '群组已接入云端：创建 / 加入 / 删除跨设备生效；把 To Do 共享给群组后，成员可见并协同编辑任务内容。'
+      : (USE_SUPABASE
+        ? '当前未登录云端：登录后群组可跨设备创建与加入；未登录时邀请码仅在本机浏览器有效。'
+        : '网页端群组数据保存在本机浏览器（IndexedDB）；跨设备共享请在微信小程序端使用。')}</div>
     <div class="card">
       <div class="row">
         <input class="cat-input" id="g-name" placeholder="新群组名称" style="flex:1" />
@@ -659,35 +964,44 @@ function renderGroups() {
       ${state.groups.length ? state.groups.map((g) => `
         <div class="card group-item" data-id="${g.id}">
           <div>
-            <div style="font-weight:700">${esc(g.name)}</div>
+            <div style="font-weight:700">${esc(g.name)}${g.ownerId === state.user.ownerId ? ' <span class="badge share">我创建的</span>' : ''}</div>
             <div class="t-mut" style="margin-top:4px">邀请码 <span class="code">${esc(g.inviteCode)}</span> · 创建 ${esc(fmtMinute(g.createTime))}</div>
           </div>
-          <button class="btn danger" data-del="${g.id}">删除</button>
+          ${g.ownerId === state.user.ownerId ? `<button class="btn danger" data-del="${g.id}">删除</button>` : ''}
         </div>`).join('') : '<div class="empty">还没有群组</div>'}
     </div>`;
 
   document.getElementById('g-create').onclick = async () => {
     const name = document.getElementById('g-name').value.trim();
     if (!name) { toast('请输入群组名称'); return; }
-    const { inviteCode } = await import('./util.js');
-    const g = { id: 'g-' + Date.now().toString(36), name, inviteCode: inviteCode(), createTime: Date.now(), ownerId: state.user.ownerId };
-    await GroupRepository.createGroup(g);
-    toast('已创建群组');
-    renderGroups();
+    try {
+      const { inviteCode } = await import('./util.js');
+      const g = { id: 'g-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name, inviteCode: inviteCode(), createTime: Date.now(), ownerId: state.user.ownerId };
+      await GroupRepository.createGroup(g);
+      toast('已创建群组，邀请码 ' + g.inviteCode);
+      await reloadAll();
+      renderGroups();
+    } catch (e) { toast('创建失败：' + (e.message || e)); }
   };
   document.getElementById('g-join').onclick = async () => {
     const code = document.getElementById('g-code').value.trim();
-    if (!code) return;
-    const g = await GroupRepository.findByCode(code);
-    if (g) toast(`已找到「${g.name}」（本地演示，真实加入请在小程序内完成）`);
-    else toast('未找到该邀请码');
+    if (!code) { toast('请输入邀请码'); return; }
+    try {
+      const msg = await GroupRepository.joinByCode(code);
+      toast(msg);
+      await reloadAll();
+      renderGroups();
+    } catch (e) { toast(e.message || '加入失败：网络异常，请稍后重试'); }
   };
   document.getElementById('g-list').onclick = async (e) => {
     const id = e.target.dataset && e.target.dataset.del;
     if (!id) return;
     if (!window.confirm('删除这个群组？（不会删除已共享的 To Do，但其共享状态需重新选择群组）')) return;
-    await GroupRepository.deleteGroup(id);
-    renderGroups();
+    try {
+      await GroupRepository.deleteGroup(id);
+      await reloadAll();
+      renderGroups();
+    } catch (err) { toast(err.message || '删除失败'); }
   };
 }
 
@@ -721,11 +1035,23 @@ function renderMine() {
         <button class="btn ghost" id="m-signout">退出登录</button>
       </div>
       <div class="t-mut" style="margin-top:8px">已登录且在线时，To Do 读写云端（多设备同步）；离线或未登录时回落本机存储。</div>` : `
-      <div class="t-mut" style="line-height:1.8">输入邮箱 → 收到 Supabase 魔法链接 → 点击即完成登录（无密码）。登录后 To Do 存云端，可在多台设备同步。首次登录后建议点「上传本机数据到云端」完成迁移。</div>
+      <div class="t-mut" style="line-height:1.8">输入邮箱 → 点「发送验证邮件」→ 两种方式任选其一完成登录（无密码）：① 点击邮件里的登录链接；② 链接打不开时（国内网络常见），把邮件里的 <b>6 位验证码</b> 填到下面登录。登录后 To Do 存云端，可在多台设备同步；首次登录后建议点「上传本机数据到云端」完成迁移。</div>
       <div class="form-row"><input class="cat-input" id="m-email" type="email" placeholder="you@example.com" /></div>
-      <div class="form-row"><button class="btn primary" id="m-login">发送登录链接</button></div>`}
+      <div class="form-row"><button class="btn primary" id="m-login">发送验证邮件</button></div>
+      <div class="form-row"><input class="cat-input" id="m-code" placeholder="邮件里的 6 位验证码" maxlength="6" inputmode="numeric" style="flex:1" /><button class="btn ghost" id="m-verify">验证码登录</button></div>`}
     </div>
     ` : ''}
+    <div class="card">
+      <div class="row" style="margin-bottom:8px"><b>主题（温柔治愈 · 莫兰迪）</b></div>
+      <div class="row" style="flex-wrap:wrap">
+        ${THEMES.map((t) => `<button class="chip-btn ${state.theme.themeId === t.id ? 'on' : ''}" data-theme-id="${t.id}">${t.name}</button>`).join('')}
+      </div>
+      <div class="row" style="flex-wrap:wrap;margin-top:8px">
+        ${THEME_BGS.map((b) => `<button class="chip-btn ${state.theme.bgId === b.id ? 'on' : ''}" data-bg-id="${b.id}">${b.name}</button>`).join('')}
+      </div>
+      <div class="t-mut" style="margin-top:8px">主题与背景全局生效（含今日/专题/详情/编辑工具/进度条），仅显示名称、不显示预览图。</div>
+    </div>
+
     <div class="card">
       <div class="row" style="margin-bottom:8px"><b>像 App 一样使用</b></div>
       <div class="t-mut" style="line-height:1.8">
@@ -773,12 +1099,40 @@ function renderMine() {
     catch (e) { toast('发送失败：' + (e.message || e)); }
     mLoginBtn.disabled = false;
   };
+  const mVerifyBtn = document.getElementById('m-verify');
+  if (mVerifyBtn) mVerifyBtn.onclick = async () => {
+    const email = (document.getElementById('m-email').value || '').trim();
+    const code = (document.getElementById('m-code').value || '').trim();
+    if (!email || !code) { toast('请先填邮箱和 6 位验证码'); return; }
+    mVerifyBtn.disabled = true;
+    try {
+      await verifyWithCode(email, code);
+      toast('登录成功，正在切换云端数据…');
+    } catch (e) { toast(e.message || '验证失败，请重发验证码'); }
+    mVerifyBtn.disabled = false;
+  };
   const mUpBtn = document.getElementById('m-upcloud');
   if (mUpBtn) mUpBtn.onclick = async () => {
     mUpBtn.disabled = true;
     try { const n = await uploadLocalToCloud(); toast('已上传 ' + n + ' 条 To Do 到云端'); render(); }
     catch (e) { toast('上传失败：' + (e.message || e)); mUpBtn.disabled = false; }
   };
+  view.querySelectorAll('[data-theme-id]').forEach((b) => {
+    b.onclick = () => {
+      state.theme.themeId = b.dataset.themeId;
+      setMeta('theme', state.theme);
+      applyTheme();
+      view.querySelectorAll('[data-theme-id]').forEach((x) => x.classList.toggle('on', x === b));
+    };
+  });
+  view.querySelectorAll('[data-bg-id]').forEach((b) => {
+    b.onclick = () => {
+      state.theme.bgId = b.dataset.bgId;
+      setMeta('theme', state.theme);
+      applyTheme();
+      view.querySelectorAll('[data-bg-id]').forEach((x) => x.classList.toggle('on', x === b));
+    };
+  });
   const mOutBtn = document.getElementById('m-signout');
   if (mOutBtn) mOutBtn.onclick = async () => {
     if (!window.confirm('退出登录？云端数据保留，本机回到离线存储模式。')) return;
@@ -841,7 +1195,7 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
 }
 
 /* v2.2.1：首渲染立即执行、不被 SDK 加载阻塞；登录会话后台恢复，完成后自动整页刷新 */
-render();
+loadPrefs().then(() => render());
 initAuth(() => { render(); })
   .then(() => { if (supaState().active) render(); })
   .catch(() => { /* SDK 加载失败：保持本地模式，登录按钮会提示重试 */ });

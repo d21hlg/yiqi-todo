@@ -53,6 +53,18 @@ export async function initAuth(onChange) {
 }
 
 /* ---------- 鉴权：邮箱魔法链接（无密码） ---------- */
+/* v2.3 备用：邮箱验证码登录（魔法链接在国内网络打不开时用）；
+   需把 Supabase Auth→Emails→Magic Link 模板中加入 {{ .Token }} 验证码 */
+export async function verifyWithCode(email, code) {
+  const c = await client();
+  const { error } = await c.auth.verifyOtp({
+    email: String(email || '').trim(),
+    token: String(code || '').trim(),
+    type: 'magiclink'
+  });
+  if (error) throw new Error('验证码错误或已过期，请重新「发送验证邮件」获取');
+}
+
 export async function signInWithEmail(email, redirectTo) {
   const c = await client();
   const { error } = await c.auth.signInWithOtp({
@@ -119,6 +131,8 @@ function todoToRow(t, uid) {
     group_id: null, /* P3 群组协同启用 */
     share_group_ids: t.shareGroupIds || [],
     is_done: !!t.isDone,
+    is_pinned: !!t.isPinned,
+    pinned_at: t.pinnedAt || '',
     last_edited_by: t.lastEditedBy || uid,
     last_edited_by_name: t.lastEditedByName || '',
     created_at: Number(t.createTime) || Date.now(),
@@ -143,6 +157,8 @@ function rowToTodo(r) {
     groupId: r.group_id || '',
     shareGroupIds: r.share_group_ids || [],
     isDone: !!r.is_done,
+    isPinned: !!r.is_pinned,
+    pinnedAt: r.pinned_at || '',
     lastEditedBy: r.last_edited_by || r.owner_id,
     lastEditedByName: r.last_edited_by_name || '',
     createTime: r.created_at,
@@ -199,5 +215,72 @@ export const CloudTodoRepository = {
     const c = await client();
     const { error } = await c.from('todos').delete().eq('id', id);
     if (error) throw error;
+  }
+};
+
+/* ---------- 群组（P3-lite：跨设备创建/加入/删除；协同读写在 RLS 层放行同群成员） ---------- */
+const gRowToDoc = (r) => ({
+  id: r.id, name: r.name, inviteCode: r.invite_code, ownerId: r.owner_id, createTime: r.created_at
+});
+export const CloudGroupRepository = {
+  async getMyGroups() {
+    const uid = needUid();
+    const c = await client();
+    const { data: mem } = await c.from('group_members').select('group_id').eq('user_id', uid).eq('status', 'active');
+    const gids = (mem || []).map((m) => m.group_id);
+    const orExpr = `owner_id.eq.${uid}` + (gids.length ? `,id.in.(${gids.join(',')})` : '');
+    const { data, error } = await c.from('groups').select('*').or(orExpr).order('created_at', { ascending: false });
+    if (error) throw error;
+    return (data || []).map(gRowToDoc);
+  },
+  async getGroupById(id) {
+    needUid();
+    const c = await client();
+    const { data } = await c.from('groups').select('*').eq('id', id).maybeSingle();
+    return data ? gRowToDoc(data) : null;
+  },
+  async createGroup(g) {
+    const uid = needUid();
+    const c = await client();
+    const { error } = await c.from('groups').insert({
+      id: g.id, name: g.name, invite_code: String(g.inviteCode || '').toUpperCase(),
+      owner_id: uid, created_at: g.createTime || Date.now()
+    });
+    if (error) throw new Error('创建群组失败：' + (error.message || '网络异常'));
+    const { error: e2 } = await c.from('group_members').insert({ group_id: g.id, user_id: uid, role: 'owner', status: 'active', joined_at: Date.now() });
+    if (e2) throw new Error('创建群组失败：' + (e2.message || '网络异常'));
+  },
+  async deleteGroup(id) {
+    const uid = needUid();
+    const c = await client();
+    const { data: g } = await c.from('groups').select('owner_id').eq('id', id).maybeSingle();
+    if (!g) throw new Error('群组不存在或已失效');
+    if (g.owner_id !== uid) throw new Error('权限不足：仅创建者可删除群组');
+    const { error } = await c.from('groups').delete().eq('id', id);
+    if (error) throw new Error('删除失败：' + (error.message || '网络异常'));
+  },
+  async findByCode(code) {
+    const c = await client();
+    const { data } = await c.from('groups').select('*')
+      .eq('invite_code', String(code || '').trim().toUpperCase()).maybeSingle();
+    return data ? gRowToDoc(data) : null;
+  },
+  async joinByCode(code) {
+    const uid = needUid();
+    const c = await client();
+    const g = await this.findByCode(code);
+    if (!g) throw new Error('群组不存在或邀请码已失效');
+    const { data: mem } = await c.from('group_members').select('user_id')
+      .eq('group_id', g.id).eq('user_id', uid).maybeSingle();
+    if (mem) throw new Error(`你已经在群组「${g.name}」中`);
+    const { error } = await c.from('group_members').insert({ group_id: g.id, user_id: uid, role: 'member', status: 'active', joined_at: Date.now() });
+    if (error) throw new Error('加入失败：' + (error.message || '网络异常，请稍后重试'));
+    return `已加入「${g.name}」`;
+  },
+  async membersOf(id) {
+    needUid();
+    const c = await client();
+    const { data } = await c.from('group_members').select('*').eq('group_id', id).eq('status', 'active');
+    return data || [];
   }
 };

@@ -60,44 +60,41 @@ export function createPaperEditor(opts) {
         <span class="tools-title">编辑工具</span>
         <span class="t-mut" id="pe-target">当前选中：未选择</span>
       </div>
-      <div class="tool-sec">
-        <span class="lbl">勾选控件</span>
-        <button class="tool-btn" id="pe-ckbtn" disabled>删除勾选框</button>
-        <span class="t-mut" id="pe-ckhint">请先选择一行内容</span>
+      <div class="tool-l1">
+        <button class="tool-btn l1" data-pan="fmt">文字</button>
+        <button class="tool-btn l1" data-pan="size">字号</button>
+        <button class="tool-btn l1" data-pan="color">颜色</button>
+        <button class="tool-btn l1" data-pan="bg">背景</button>
+        <button class="tool-btn l1" data-pan="tpl">模板</button>
+        <button class="tool-btn l1" data-pan="share">共享</button>
+        <button class="tool-btn l1" data-pan="more">更多</button>
       </div>
-      <div class="tool-sec">
-        <span class="lbl">层级</span>
-        <button class="tool-btn" id="pe-promote" disabled>提升为一级</button>
-        <button class="tool-btn" id="pe-demote" disabled>降级为二级</button>
-      </div>
-      <div class="tool-sec">
-        <span class="lbl">文字格式</span>
+      <div class="tool-pan" id="pe-pan-fmt" hidden>
         <span class="tool chip-b" data-fmt="b">B</span>
         <span class="tool chip-i" data-fmt="i">I</span>
         <span class="tool chip-u" data-fmt="u">U</span>
         <span class="tool chip-s" data-fmt="s">S</span>
+        <span class="tool danger" id="pe-clear">清除格式</span>
       </div>
-      <div class="tool-sec">
-        <span class="lbl">字号</span>
+      <div class="tool-pan" id="pe-pan-size" hidden>
         <span class="tool" data-size="0">标准</span>
         <span class="tool" data-size="1">小</span>
         <span class="tool" data-size="2">大</span>
+        <span class="tool" data-size="3">特大</span>
       </div>
-      <div class="tool-sec">
-        <span class="lbl">文字颜色</span>
+      <div class="tool-pan" id="pe-pan-color" hidden>
         <span class="dot none" data-c=""></span>
         ${COLORS.map((c) => `<span class="dot" data-c="${c.accent}" style="background:${c.accent}" title="${c.name}"></span>`).join('')}
         <input class="hex-input" id="pe-hexc" placeholder="#7fcf91" maxlength="7" />
       </div>
-      <div class="tool-sec">
-        <span class="lbl">背景色</span>
+      <div class="tool-pan" id="pe-pan-bg" hidden>
         <span class="dot none" data-bg=""></span>
         ${COLORS.map((c) => `<span class="dot" data-bg="${c.soft}" style="background:${c.soft}" title="${c.name}"></span>`).join('')}
         <input class="hex-input" id="pe-hexbg" placeholder="#f8e7a1" maxlength="7" />
       </div>
-      <div class="tool-sec">
-        <span class="tool danger" id="pe-clear">清除格式</span>
-      </div>
+      <div class="tool-pan pan-slot" id="pe-slot-tpl" hidden></div>
+      <div class="tool-pan pan-slot" id="pe-slot-share" hidden></div>
+      <div class="tool-pan pan-slot" id="pe-slot-more" hidden></div>
     </div>`;
 
   // 浮动格式条（选中文字后出现，移动端友好）
@@ -112,16 +109,14 @@ export function createPaperEditor(opts) {
     <span class="fb" data-size="2">大</span>
     ${COLORS.slice(0, 6).map((c) => `<span class="fb" data-c="${c.accent}" style="color:${c.accent}">●</span>`).join('')}
     <span class="fb" data-clear="1">清除</span>`;
-  document.body.appendChild(floatBar);
+  if (!readonly) document.body.appendChild(floatBar);
 
   const $ = (sel2) => mount.querySelector(sel2);
+  const readonly = opts.editable === false;
+  if (readonly) mount.classList.add('pe-readonly');
   const rowsEl = $('#pe-rows');
   const titleEl = $('#pe-title');
   const targetEl = $('#pe-target');
-  const ckBtn = $('#pe-ckbtn');
-  const ckHint = $('#pe-ckhint');
-  const promoteBtn = $('#pe-promote');
-  const demoteBtn = $('#pe-demote');
 
   titleEl.style.cssText = titleStyleCss(titleSt);
 
@@ -131,12 +126,12 @@ export function createPaperEditor(opts) {
       const done = r.hasCheckbox && r.completed;
       const check = r.hasCheckbox
         ? `<span class="pcheck ${r.level === 2 ? 'circle' : ''} ${done ? 'on' : ''}" data-act="check" data-key="${r.key}" aria-label="${done ? '取消完成' : '标记完成'}"></span>`
-        : `<span class="pcheck-ghost" data-act="activate" data-key="${r.key}" title="纯文本行（无勾选框，不参与完成统计）"></span>`;
-      return `<div class="task-row ${r.level === 2 ? 'level-2' : 'level-1'} ${activeRowKey === r.key ? 'active' : ''}" data-key="${r.key}">
+        : '';
+      return `<div class="task-row ${r.level === 2 ? 'level-2' : 'level-1'} ${r.hasCheckbox === false ? 'no-ctrl' : ''} ${activeRowKey === r.key ? 'active' : ''}" data-key="${r.key}">
         ${check}
-        <div class="task-content ${done ? 'done' : ''}" contenteditable="true" spellcheck="false"
+        <div class="task-content ${done ? 'done' : ''}" contenteditable="${readonly ? 'false' : 'true'}" spellcheck="false"
           data-ph="写一条任务…" data-key="${r.key}">${segsToHtml(r.segs, done)}</div>
-        <span class="task-del" data-act="del" data-key="${r.key}">⋯</span>
+        ${readonly ? '' : `<span class="task-del" data-act="del" data-key="${r.key}">⋯</span>`}
       </div>`;
     }).join('');
   }
@@ -153,22 +148,8 @@ export function createPaperEditor(opts) {
       const ar = rowByKey(activeRowKey);
       label = `第 ${rowIdx(activeRowKey) + 1} 行${ar && ar.level === 2 ? ' · 二级' : ''}`;
     }
-    targetEl.textContent = '当前选中：' + label;
-    const row = activeRowKey ? rowByKey(activeRowKey) : null;
-    if (row && !titleFocused) {
-      ckBtn.disabled = false;
-      ckHint.style.display = 'none';
-      const sub = row.level === 2;
-      ckBtn.textContent = row.hasCheckbox ? (sub ? '删除圆圈' : '删除勾选框') : (sub ? '添加圆圈' : '添加勾选框');
-      promoteBtn.disabled = false;
-      demoteBtn.disabled = false;
-    } else {
-      promoteBtn.disabled = true;
-      demoteBtn.disabled = true;
-      ckBtn.disabled = true;
-      ckBtn.textContent = titleFocused ? '添加/删除勾选框' : '添加勾选框 / 删除勾选框';
-      ckHint.style.display = '';
-    }
+    const t = $('#pe-target');
+    if (t) t.textContent = '当前选中：' + label;
   }
 
   function emit() { onChange(getPayload()); }
@@ -253,10 +234,23 @@ export function createPaperEditor(opts) {
     const done = row.hasCheckbox && row.completed;
     el.classList.toggle('done', done);
     el.innerHTML = segsToHtml(row.segs, done);
-    const chk = el.parentNode.querySelector('.pcheck, .pcheck-ghost');
-    if (chk) {
-      chk.className = row.hasCheckbox ? `pcheck ${row.level === 2 ? 'circle' : ''} ${done ? 'on' : ''}` : 'pcheck-ghost';
+    const rowEl = el.parentNode;
+    const old = rowEl.querySelector('.pcheck, .pcheck-ghost');
+    if (row.hasCheckbox === false) {
+      if (old) old.remove();
+      rowEl.classList.add('no-ctrl');
+    } else {
+      rowEl.classList.remove('no-ctrl');
+      const cls = `pcheck ${row.level === 2 ? 'circle' : ''} ${done ? 'on' : ''}`;
+      if (old) old.className = cls;
+      else {
+        const sp = document.createElement('span');
+        sp.className = cls; sp.dataset.act = 'check'; sp.dataset.key = row.key;
+        rowEl.insertBefore(sp, el);
+      }
     }
+    rowEl.classList.toggle('level-2', row.level === 2);
+    rowEl.classList.toggle('level-1', row.level !== 2);
     if (caretOffset != null) setCaret(el, caretOffset);
   }
 
@@ -508,7 +502,15 @@ export function createPaperEditor(opts) {
       elByKey(key) && elByKey(key).focus();
       syncTarget();
     } else if (act === 'del') {
-      if (!window.confirm('删除这条任务？删除后可在保存前刷新页面恢复。')) return;
+      if (row.hasCheckbox === false && window.confirm('给这条纯文本行加回勾选控件？\n（点「取消」则删除整条任务）')) {
+        row.hasCheckbox = true;
+        row.completed = false;
+        rerenderRow(key, null);
+        syncTarget();
+        emit();
+        return;
+      }
+      if (!window.confirm('删除这条任务？')) return;
       const idx = rowIdx(key);
       rows.splice(idx, 1);
       if (!rows.length) rows.push(newRow(null, 0));
@@ -530,20 +532,6 @@ export function createPaperEditor(opts) {
     const el = elByKey(r.key);
     if (el) el.focus();
     emit();
-  });
-
-  ckBtn.addEventListener('click', () => {
-    if (!activeRowKey || titleFocused) { toast('请先选择一行内容'); return; }
-    const row = rowByKey(activeRowKey);
-    if (!row) return;
-    row.hasCheckbox = row.hasCheckbox === false; // 有→删；无→加
-    row.completed = false;                        // 切换后 completed 一律归 false
-    rerenderRow(row.key, null);
-    syncTarget();
-    emit();
-    toast(row.hasCheckbox
-      ? (row.level === 2 ? '已添加圆圈' : '已添加勾选框')
-      : '已改为纯文本行（不参与完成统计）');
   });
 
   /* ---------- v2.1 层级：提升为一级 / 降级为二级 ---------- */
@@ -576,8 +564,6 @@ export function createPaperEditor(opts) {
     emit();
     toast('已降级为二级任务（圆圈）');
   }
-  promoteBtn.addEventListener('click', promoteRow);
-  demoteBtn.addEventListener('click', demoteRow);
 
   /* ---------- v2.1 键盘：Enter=下方新建二级；行首 Backspace=删除勾选控件 ---------- */
   function caretAtStart(el) {
@@ -629,12 +615,35 @@ export function createPaperEditor(opts) {
       const nEl = elByKey(nr.key);
       if (nEl) nEl.focus();
     } else if (e.key === 'Backspace') {
-      // 行首按 Backspace：有勾选框/圆圈时只删勾选控件，不删文字与格式
+      // 行首 Backspace：二级先升一级（圆圈→方框）；一级删方框；文字与格式始终保留
       if (row.hasCheckbox !== false && caretAtStart(el)) {
+        e.preventDefault();
+        if (row.level === 2) {
+          row.level = 1;
+          row.parentId = '';
+          renderRows();
+          syncTarget();
+          emit();
+          const el2 = elByKey(key);
+          if (el2) { el2.focus(); setCaret(el2, 0); }
+          toast('已提升为一级（方形勾选框）；再在行首按删除键可去掉勾选框');
+        } else {
+          row.hasCheckbox = false;
+          row.completed = false;
+          rerenderRow(key, 0);
+          syncTarget();
+          emit();
+          toast('已删除勾选框（文字保留、自动前移）');
+        }
+      }
+    } else if (e.key === 'Delete') {
+      // 选中行内文字时按 Delete：只删该行的勾选控件，不删文字
+      const s2 = window.getSelection();
+      if (s2 && !s2.isCollapsed && row.hasCheckbox !== false) {
         e.preventDefault();
         row.hasCheckbox = false;
         row.completed = false;
-        rerenderRow(key, 0);
+        rerenderRow(key, null);
         syncTarget();
         emit();
         toast(row.level === 2 ? '已删除圆圈（文字保留）' : '已删除勾选框（文字保留）');
@@ -642,10 +651,29 @@ export function createPaperEditor(opts) {
     }
   });
 
-  // 工具面板 + 浮动条的事件委托（data-fmt / data-size / data-c / data-bg / data-clear）
+  // 一级按钮 → 展开/收起对应二级面板
+  function togglePan(id) {
+    const target = mount.querySelector('#pe-pan-' + id) || mount.querySelector('#pe-slot-' + id);
+    const isOpen = target && !target.hidden;
+    mount.querySelectorAll('.tool-pan').forEach((p) => { p.hidden = true; });
+    mount.querySelectorAll('.tool-btn.l1').forEach((b) => b.classList.remove('on'));
+    if (!isOpen && target) {
+      target.hidden = false;
+      const btn = mount.querySelector(`.tool-btn.l1[data-pan="${id}"]`);
+      if (btn) btn.classList.add('on');
+      if ((id === 'tpl' || id === 'share' || id === 'more')
+        && typeof opts.onPanelOpen === 'function' && !target.dataset.filled) {
+        opts.onPanelOpen(id, target);
+        target.dataset.filled = '1';
+      }
+    }
+  }
+
+  // 工具面板 + 浮动条的事件委托（data-pan / data-fmt / data-size / data-c / data-bg / data-clear）
   function onToolClick(e) {
     const d = e.target.dataset;
     if (!d) return;
+    if (d.pan) { togglePan(d.pan); e.preventDefault(); return; }
     if (d.fmt === 'b') toggleField('b');
     else if (d.fmt === 'i') toggleField('i');
     else if (d.fmt === 's') toggleField('s');
@@ -688,10 +716,11 @@ export function createPaperEditor(opts) {
       const paper = $('#pe-paper');
       paper.className = 'paper ' + (paperClass || '');
     },
+    togglePan,
     destroy() {
       destroyed = true;
       document.removeEventListener('selectionchange', onSelectionChange);
-      floatBar.remove();
+      if (!readonly) floatBar.remove();
       mount.innerHTML = '';
     }
   };
