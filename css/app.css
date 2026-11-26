@@ -347,3 +347,7 @@ body.no-tab #view { padding-bottom: 130px; }
 .todo-bottom-actions { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 12px; }
 .todo-bottom-actions .btn { border-radius: 999px; }
 .todo-bottom-actions + .tool-pan { border-top: none; }
+
+/* v2.4.1 编辑栏关闭按钮 */
+.tool-close { margin-left: auto; width: 28px; height: 28px; line-height: 26px; text-align: center; border-radius: 999px; border: 1px solid var(--line); color: var(--text-2); font-size: 16px; cursor: pointer; background: #fff; }
+.tools-head { display: flex; align-items: center; gap: 8px; }

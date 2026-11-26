@@ -62,6 +62,8 @@ export function createPaperEditor(opts) {
       <div class="tools-head">
         <span class="tools-title">文字编辑</span>
         <span class="t-mut" id="pe-target">当前选中：未选择</span>
+        <span class="spacer"></span>
+        <span class="tool-close" id="pe-close" title="收起编辑栏">×</span>
       </div>
       <div class="tool-l1">
         <button class="tool-btn l1" data-pan="fmt">样式</button>
@@ -700,12 +702,32 @@ export function createPaperEditor(opts) {
   mount.addEventListener('focusin', (e) => {
     if (e.target.closest && e.target.closest('#pe-rows, #pe-title, #pe-tools')) showTools();
   });
-  mount.addEventListener('focusout', () => {
-    setTimeout(() => {
-      const ae = document.activeElement;
-      if (!ae || !ae.closest || !ae.closest('#pe-rows, #pe-title, #pe-tools')) scheduleHideTools();
-    }, 0);
-  });
+  // v2.4.1：blur 不再自动收起（选色号/字号会触发 blur，导致编辑栏闪退）
+  // 收起只由：关闭按钮 / 点击编辑栏与任务区之外的空白 / 页面切换（编辑器销毁）触发
+  function hideToolsNow() {
+    clearTimeout(hideTimer);
+    const t = $('#pe-tools');
+    if (t) t.classList.add('is-hidden');
+    mount.querySelectorAll('.tool-pan').forEach((p) => { p.hidden = true; });
+    mount.querySelectorAll('.tool-btn.l1').forEach((b) => b.classList.remove('on'));
+  }
+  const onClose = () => hideToolsNow();
+  const closeBtn = $('#pe-close');
+  if (closeBtn) closeBtn.addEventListener('click', onClose);
+  // 点工具栏内部不丢焦点/选区，也不触发外部关闭
+  const toolsEl = $('#pe-tools');
+  if (toolsEl) {
+    toolsEl.addEventListener('mousedown', (e) => e.preventDefault());
+    toolsEl.addEventListener('pointerdown', (e) => e.stopPropagation());
+    toolsEl.addEventListener('click', (e) => e.stopPropagation());
+  }
+  const onDocPointerDown = (e) => {
+    const t = e.target;
+    if (!t || !t.closest) return;
+    if (t.closest('#pe-tools') || t.closest('#pe-rows') || t.closest('#pe-title')) return;
+    hideToolsNow();
+  };
+  document.addEventListener('pointerdown', onDocPointerDown);
 
   document.addEventListener('selectionchange', onSelectionChange);
 
@@ -724,6 +746,7 @@ export function createPaperEditor(opts) {
     destroy() {
       destroyed = true;
       document.removeEventListener('selectionchange', onSelectionChange);
+      document.removeEventListener('pointerdown', onDocPointerDown);
       mount.innerHTML = '';
     }
   };

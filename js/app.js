@@ -148,7 +148,14 @@ window.addEventListener('error', (ev) => {
   console.error('[GlobalError]', ev.message, ev.filename, ev.lineno);
   if (window.__toast) window.__toast('页面异常：' + ev.message);
 });
-window.addEventListener('hashchange', render);
+window.addEventListener('hashchange', () => {
+  console.log('[Navigation] hashchange:', location.hash);
+  render();
+});
+document.addEventListener('click', (e) => {
+  const tab = e.target.closest && e.target.closest('#tabbar a');
+  if (tab) console.log('[Navigation] tab click:', tab.dataset.tab, tab.getAttribute('href'));
+}, true);
 
 /* ================= 通用：Todo 卡片 ================= */
 function todoCardHtml(todo) {
@@ -587,9 +594,11 @@ function renderCate() {
     let doc = state.todos.find((t) => t.id === state.pref.lastCateTodoId && t.moduleType === 'categorized');
     if (!doc || (list.length && !list.some((t) => t.id === doc.id))) doc = list[0];
     if (!doc) {
+      // 空数据/上次记录的 Todo 已删除 → 回缩小版；必须走 renderCate 重读偏好，
+      // 不能递归 updateList（mode 常量未变会死循环，导致专题页栈溢出白屏）
       state.pref.cateMode = 'compact';
       setMeta('viewPref', state.pref);
-      updateList();
+      renderCate();
       return;
     }
     const stat = getTodoProgress(doc);
@@ -1361,7 +1370,8 @@ window.addEventListener('online', syncOffline);
 window.addEventListener('offline', syncOffline);
 syncOffline();
 
-if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+const SW_ENABLED = false; // v2.4.1 排障期临时关闭 SW：保证所有设备立刻拿最新代码；稳定后改回 true
+if (SW_ENABLED && 'serviceWorker' in navigator && location.protocol !== 'file:') {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('./sw.js').catch(() => { /* 部分环境（如 file://）不支持 */ });
   });

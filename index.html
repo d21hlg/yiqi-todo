@@ -36,6 +36,15 @@
   </div>
   <script>
     (function () {
+      // v2.4.1：启动即注销旧 Service Worker 并清空旧缓存（排障期保证拿最新代码）
+      try {
+        if ('serviceWorker' in navigator) {
+          navigator.serviceWorker.getRegistrations().then(function (rs) {
+            rs.forEach(function (r) { r.unregister(); });
+          });
+        }
+        if (window.caches) { caches.keys().then(function (ks) { ks.forEach(function (k) { caches.delete(k); }); }); }
+      } catch (e) { /* 忽略 */ }
       window.__bootErrs = [];
       window.addEventListener('error', function (e) { window.__bootErrs.push(e.message); });
       window.addEventListener('unhandledrejection', function (e) {
