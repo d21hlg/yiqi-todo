@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>探针</title>
+<style>body{font:14px/1.8 -apple-system,sans-serif;padding:24px;color:#333}li{margin:4px 0}b.ok{color:#2a8f4f}b.bad{color:#c33}</style>
+</head>
+<body>
+<h3>一起 ToDo 环境探针</h3>
+<ul id="r"><li>检测中…</li></ul>
+<script>
+(function () {
+  var out = [];
+  function row(k, ok, extra) {
+    out.push('<li>' + k + '：<b class="' + (ok ? 'ok' : 'bad') + '">' + (ok ? 'OK' : 'FAIL') + '</b>' + (extra ? ' ' + extra : '') + '</li>');
+    document.getElementById('r').innerHTML = out.join('');
+  }
+  row('页面本身加载', true, location.href);
+  fetch('./js/app.js?probe=' + Date.now(), { cache: 'no-store' })
+    .then(function (r) { row('app.js 可下载', r.ok, 'HTTP ' + r.status); return r.text(); })
+    .then(function (t) { row('app.js 内容长度', t.length > 10000, t.length + ' 字节'); })
+    .catch(function (e) { row('app.js 可下载', false, String(e && e.message || e)); });
+  fetch('./css/app.css?probe=' + Date.now(), { cache: 'no-store' })
+    .then(function (r) { row('app.css 可下载', r.ok, 'HTTP ' + r.status); })
+    .catch(function (e) { row('app.css 可下载', false, String(e && e.message || e)); });
+  try {
+    var req = indexedDB.open('probe-test', 1);
+    req.onsuccess = function () { row('IndexedDB', true); req.result.close(); };
+    req.onerror = function () { row('IndexedDB', false); };
+    setTimeout(function () { if (out.length < 4) row('IndexedDB', false, '超时'); }, 4000);
+  } catch (e) { row('IndexedDB', false, String(e.message || e)); }
+  row('ES Module 支持', 'noModule' in HTMLScriptElement.prototype);
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.getRegistrations().then(function (rs) {
+      row('ServiceWorker 注册数', true, rs.length + ' 个（应为 0）');
+      rs.forEach(function (r) { r.unregister(); });
+    });
+  } else { row('ServiceWorker', true, '不支持（忽略）'); }
+  if (window.caches) caches.keys().then(function (ks) { row('旧缓存', ks.length === 0, ks.join(',') || '无'); });
+})();
+</script>
+</body>
+</html>
