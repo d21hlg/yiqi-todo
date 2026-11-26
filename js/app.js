@@ -12,7 +12,7 @@ import { USE_SUPABASE } from './config.js';
 import { initAuth, supaState, signInWithEmail, signOutCloud, verifyWithCode, signInWithPasswordOrSignup } from './supabase-db.js';
 import { createPaperEditor } from './paper.js';
 import { getTodoProgress, weekUnfinishedDates, fmtShortDate, sortTopicTodos, THEMES, THEME_BGS, datesForRule, hasTaskFromRule, defaultCalendar } from './util.js';
-import { getMeta, setMeta } from './db.js';
+import { getMeta, setMeta, localSnapshot } from './db.js';
 
 const view = document.getElementById('view');
 const tabbar = document.getElementById('tabbar');
@@ -68,12 +68,22 @@ function toast(msg) {
 window.__toast = toast;
 
 async function reloadAll() {
-  const [todos, groups, user] = await Promise.all([
-    TodoRepository.getTodos(), GroupRepository.getGroups(), getLocalUser()
-  ]);
-  state.todos = todos;
-  state.groups = groups;
-  state.user = user;
+  try {
+    const [todos, groups, user] = await Promise.all([
+      TodoRepository.getTodos(), GroupRepository.getGroups(), getLocalUser()
+    ]);
+    state.todos = todos;
+    state.groups = groups;
+    state.user = user;
+  } catch (e) {
+    // 云端超时/断网：回退本机快照，保证页面一定能打开（hotfix）
+    console.error('[reloadAll] cloud failed, fallback local:', e);
+    const snap = await localSnapshot();
+    state.todos = snap.todos;
+    state.groups = snap.groups;
+    state.user = snap.user;
+    toast('网络异常：已显示本机数据，联网后自动恢复云端');
+  }
 }
 
 /* ================= 路由 ================= */
@@ -86,11 +96,12 @@ function parseHash() {
 }
 
 async function render() {
-  const { parts, params } = parseHash();
+  let parts, params;
+  try {
+  ({ parts, params } = parseHash());
   flushEditSave();
   flushDailySave();
   flushCateSave();
-  // v2.3：首页只读后「＋添加任务」= 创建草稿并跳编辑页；正在编辑该草稿时不回收
   const editingDraft = parts[0] === 'edit' && state.daily.draftId && parts[1] === state.daily.draftId;
   if (!editingDraft) cleanupDailyDraft();
   if (state.edit && state.edit.editor) { state.edit.editor.destroy(); state.edit.editor = null; }
@@ -103,26 +114,33 @@ async function render() {
     a.classList.toggle('active', a.dataset.tab === route);
   });
 
-  try {
+  {
     if (route === 'daily') renderDaily();
     else if (route === 'cate') renderCate();
     else if (route === 'groups') renderGroups();
     else if (route === 'mine') renderMine();
     else if (route === 'edit') await renderEdit(parts[1], params);
     else renderDaily();
+  }
   } catch (err) {
     console.error('[DailyPage] load failed:', err);
-    view.innerHTML = `<div class="card empty">
-      <div>页面加载失败</div>
-      <div class="t-mut" style="margin:8px 0">${esc(String((err && err.message) || err))}</div>
-      <button class="btn primary" id="r-retry">重试</button>
-    </div>`;
-    const rb = document.getElementById('r-retry');
-    if (rb) rb.onclick = () => render();
+    try {
+      view.innerHTML = `<div class="card empty">
+        <div>页面加载失败</div>
+        <div class="t-mut" style="margin:8px 0">${esc(String((err && err.message) || err))}</div>
+        <button class="btn primary" id="r-retry">重试</button>
+      </div>`;
+      const rb = document.getElementById('r-retry');
+      if (rb) rb.onclick = () => render();
+    } catch (_) { /* 视图容器都不可用时至少控制台有日志 */ }
   }
 
   window.scrollTo(0, 0);
 }
+window.addEventListener('error', (ev) => {
+  console.error('[GlobalError]', ev.message, ev.filename, ev.lineno);
+  if (window.__toast) window.__toast('页面异常：' + ev.message);
+});
 window.addEventListener('hashchange', render);
 
 /* ================= 通用：Todo 卡片 ================= */

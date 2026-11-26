@@ -126,6 +126,12 @@ export async function uploadLocalToCloud() {
 }
 export { getAll as localGetAllTodos, del as localDelTodo };
 
+/* ---------- 本地快照（云端不可用时兜底，保证页面一定能开） ---------- */
+export async function localSnapshot() {
+  const [todos, groups, user] = await Promise.all([getAll('todos'), getAll('groups'), getLocalUser()]);
+  return { todos, groups, user };
+}
+
 /* ---------- 通用 meta（视图偏好/主题/批量规则/日历） ---------- */
 export function getMeta(key, dflt) {
   return getOne('meta', key).then((m) => (m && m.value !== undefined ? m.value : dflt));
