@@ -41,8 +41,10 @@ export function createPaperEditor(opts) {
   // 浮动条已废弃（v2.4 改为 sticky 工具卡），保留桩对象兼容旧引用
   const floatBar = { classList: { add() {}, remove() {}, toggle() {} }, style: {}, addEventListener() {}, remove() {} };
   const onChange = opts.onChange || (() => {});
-  const rows = (opts.initial && opts.initial.tasks && opts.initial.tasks.length
-    ? opts.initial.tasks : [null]).map((t, i) => newRow(t, i));
+  const rawInit = opts.initial && opts.initial.tasks;
+  const initTasks = Array.isArray(rawInit) ? rawInit
+    : (rawInit && typeof rawInit === 'object' ? Object.values(rawInit).filter((x) => x && typeof x === 'object') : []);
+  const rows = (initTasks.length ? initTasks : [null]).map((t, i) => newRow(t, i));
   let titleVal = (opts.initial && opts.initial.title) || '';
   let titleSt = normalizeTitleStyle(opts.initial && opts.initial.titleStyle);
   let activeRowKey = '';

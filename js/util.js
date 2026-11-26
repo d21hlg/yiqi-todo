@@ -127,10 +127,11 @@ export function normalizeTask(task) {
 
 /** tasks 数组归一（兼容老数据/无 rich） */
 export function normalizeTasks(tasks) {
-  if (!Array.isArray(tasks) || !tasks.length) {
+  const arr = safeTasksArray(tasks);
+  if (!arr.length) {
     return [{ id: uid(), text: '', completed: false, hasCheckbox: true }];
   }
-  return tasks.map((t) => normalizeTask(t));
+  return arr.map((t) => normalizeTask(t || {}));
 }
 
 export function richFromSegs(segs) {
@@ -167,15 +168,16 @@ export function tasksStat(tasks) {
   const done = cb.filter((t) => t.completed).length;
   return { total: cb.length, done, percent: cb.length ? Math.round((done / cb.length) * 100) : 0 };
 }
-export function isTodoCompleted(tasks) {
-  const cb = (tasks || []).filter((t) => t.hasCheckbox !== false);
+export function isTodoCompleted(x) {
+  const tasks = Array.isArray(x) ? x : safeTasksArray(x && x.tasks);
+  const cb = tasks.filter((t) => t && t.hasCheckbox !== false);
   return cb.length > 0 && cb.every((t) => t.completed);
 }
 
 /* ---------- 整篇标题 ---------- */
 export function getTodoTitle(todo) {
   if (todo && typeof todo.title === 'string' && todo.title.trim()) return todo.title.trim();
-  const first = (todo && todo.tasks ? todo.tasks : []).find((t) => (t.text || '').trim());
+  const first = safeTasksArray(todo && todo.tasks).find((t) => t && (t.text || '').trim());
   if (first) return first.text.trim();
   return '未命名 Todo';
 }
@@ -312,7 +314,7 @@ export function mergeDuplicateDailyTodos(todos) {
       const merged = Object.assign({}, todo, {
         title: formatDailyTodoTitle(todo.targetDate),
         titleCustom: true,
-        tasks: (todo.tasks || []).slice(),
+        tasks: safeTasksArray(todo.tasks).slice(),
         _mergedFrom: [id]
       });
       map.set(key, merged);
@@ -320,7 +322,7 @@ export function mergeDuplicateDailyTodos(todos) {
       continue;
     }
     const exist = map.get(key);
-    exist.tasks = exist.tasks.concat(todo.tasks || []);
+    exist.tasks = safeTasksArray(exist.tasks).concat(safeTasksArray(todo.tasks));
     if ((todo.createTime || 0) && (todo.createTime < (exist.createTime || Infinity))) exist.createTime = todo.createTime;
     if ((todo.updateTime || 0) > (exist.updateTime || 0)) exist.updateTime = todo.updateTime;
     exist._mergedFrom.push(id);
@@ -332,9 +334,23 @@ export function mergeDuplicateDailyTodos(todos) {
 }
 
 /* ================= v2.3 新增纯函数 ================= */
+/* v2.4.4 毒数据免疫：tasks 可能是对象/字符串/缺失，一律安全转数组 */
+export function safeTasksArray(v) {
+  if (Array.isArray(v)) return v;
+  if (typeof v === 'string') {
+    try { const p = JSON.parse(v); if (Array.isArray(p)) return p; } catch (e) { /* ignore */ }
+    return [];
+  }
+  if (v && typeof v === 'object') {
+    const vals = Object.values(v);
+    if (vals.length && vals.every((x) => x && typeof x === 'object')) return vals;
+    return [];
+  }
+  return [];
+}
 /* 进度实时计算：只统计带勾选框/圆圈的一二级 task；任何改动后调用即得最新值 */
 export function getTodoProgress(todo) {
-  const tasks = (todo && todo.tasks) || [];
+  const tasks = safeTasksArray(todo && todo.tasks);
   const checkable = tasks.filter((t) => t && t.hasCheckbox !== false);
   const total = checkable.length;
   const done = checkable.filter((t) => t.completed).length;
@@ -346,7 +362,7 @@ export function getTodoProgress(todo) {
   };
 }
 export function hasUnfinishedCheckableTasks(todo) {
-  const c = ((todo && todo.tasks) || []).filter((t) => t && t.hasCheckbox !== false);
+  const c = safeTasksArray(todo && todo.tasks).filter((t) => t && t.hasCheckbox !== false);
   return c.length > 0 && c.some((t) => !t.completed);
 }
 /* 过去 7 天（不含今天）中有未完成可勾选任务的日期，倒序 */

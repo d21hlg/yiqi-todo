@@ -11,7 +11,7 @@ import { TodoRepository, GroupRepository, getLocalUser, saveLocalUser, newTodoDo
 import { USE_SUPABASE } from './config.js';
 import { initAuth, supaState, signInWithEmail, signOutCloud, verifyWithCode, signInWithPasswordOrSignup } from './supabase-db.js';
 import { createPaperEditor } from './paper.js';
-import { getTodoProgress, weekUnfinishedDates, fmtShortDate, sortTopicTodos, THEMES, THEME_BGS, datesForRule, hasTaskFromRule, defaultCalendar, isChinaLegalHoliday } from './util.js';
+import { getTodoProgress, weekUnfinishedDates, fmtShortDate, sortTopicTodos, THEMES, THEME_BGS, datesForRule, hasTaskFromRule, defaultCalendar, isChinaLegalHoliday, safeTasksArray } from './util.js';
 import { getMeta, setMeta, localSnapshot } from './db.js';
 
 const view = document.getElementById('view');
@@ -73,20 +73,33 @@ function toast(msg) {
 }
 window.__toast = toast;
 
+function sanitizeTodos(list) {
+  const arr = Array.isArray(list) ? list : [];
+  arr.forEach((t) => {
+    if (!t || typeof t !== 'object') return;
+    if (!Array.isArray(t.tasks)) {
+      console.error('[DataRepair] todo.tasks 非数组，读时修复:', t.id, typeof t.tasks);
+      t.tasks = safeTasksArray(t.tasks);
+      TodoRepository.updateTodo(t).catch(() => {});
+    }
+  });
+  return arr;
+}
+
 async function reloadAll() {
   try {
     const [todos, groups, user] = await Promise.all([
       TodoRepository.getTodos(), GroupRepository.getGroups(), getLocalUser()
     ]);
-    state.todos = todos;
-    state.groups = groups;
+    state.todos = sanitizeTodos(todos);
+    state.groups = Array.isArray(groups) ? groups : [];
     state.user = user;
   } catch (e) {
     // 云端超时/断网：回退本机快照，保证页面一定能打开（hotfix）
     console.error('[reloadAll] cloud failed, fallback local:', e);
     const snap = await localSnapshot();
-    state.todos = snap.todos;
-    state.groups = snap.groups;
+    state.todos = sanitizeTodos(snap.todos);
+    state.groups = Array.isArray(snap.groups) ? snap.groups : [];
     state.user = snap.user;
     toast('网络异常：已显示本机数据，联网后自动恢复云端');
   }
